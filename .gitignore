@@ -24,3 +24,6 @@ Thumbs.db
 .env.*
 *.key
 *.pem
+# runtime data
+data/*.db
+
