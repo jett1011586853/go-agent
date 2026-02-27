@@ -1,0 +1,51 @@
+default_agent: build
+workspace_root: .
+rules_file: AGENTS.md
+storage_path: data/agent.db
+embedding_enabled: false
+embedding_base_url: http://localhost:8001
+embedding_model: nvidia/llama-3.2-nv-embedqa-1b-v2
+embedding_index_path: data/embed-index.jsonl
+embedding_top_k: 12
+embedding_per_file_max: 3
+embedding_chunk_lines: 260
+embedding_chunk_overlap: 50
+embedding_batch_size: 12
+embedding_max_context_chars: 28000
+embedding_init_timeout: 8m
+compaction_turns: 30
+compaction_token_threshold: 12000
+context_turn_window: 10
+tool_output_limit: 50000
+request_timeout: 180s
+turn_timeout: 90m
+oneshot_timeout: 60m
+nim_base_url: https://integrate.api.nvidia.com/v1
+llm_max_retries: 2
+llm_stream: true
+enable_thinking: true
+clear_thinking: false
+enable_http: false
+http_addr: :8090
+
+agents:
+  build:
+    mode: primary
+    model: z-ai/glm5
+    tools: ["list", "glob", "grep", "read", "edit", "patch", "bash", "webfetch", "websearch"]
+    permissions:
+      "*": allow
+    temperature: 0.2
+    max_tokens: 150000
+
+  plan:
+    mode: primary
+    model: z-ai/glm5
+    tools: ["list", "glob", "grep", "read", "edit", "patch", "bash", "webfetch", "websearch"]
+    permissions:
+      edit: ask
+      patch: ask
+      bash: ask
+      "*": allow
+    temperature: 0.1
+    max_tokens: 150000

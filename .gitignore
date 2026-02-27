@@ -1,0 +1,26 @@
+# binaries / build
+bin/
+dist/
+out/
+*.exe
+*.dll
+*.so
+*.dylib
+
+# Go test
+*.test
+*.out
+
+# IDE
+.vscode/
+.idea/
+
+# OS
+.DS_Store
+Thumbs.db
+
+# secrets / local env
+.env
+.env.*
+*.key
+*.pem
