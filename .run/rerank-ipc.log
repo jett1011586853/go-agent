@@ -1,0 +1,420 @@
+﻿
+===================================
+== NVIDIA NIM for Text Reranking ==
+===================================
+
+NVIDIA Release 1.8.0
+Model: nvidia/llama-3.2-nv-rerankqa-1b-v2
+
+Container image Copyright (c) 2016-2025, NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+docker : INFO 2026-02-28 10:17:21.291 profiles.py:208] Matched profile_id in manifest from env NIM_MODEL_PROFILE to: 4a
+a05527bed7c338689c9418e81d029fa03a2b58569aedda792e8d5af6abe91c
+At line:2 char:1
++ docker logs rerank-nim 2>&1 | Out-File -Encoding utf8 d:\go-agent\.ru ...
++ ~~~~~~~~~~~~~~~~~~~~~~~~~~~
+    + CategoryInfo          : NotSpecified: (INFO 2026-02-28...92e8d5af6abe91c:String) [], RemoteException
+    + FullyQualifiedErrorId : NativeCommandError
+ 
+The NIM container is governed by the NVIDIA Software License Agreement (found at https://www.nvidia.com/en-us/agreements/enterprise-software/nvidia-software-license-agreement/) and the Product-Specific Terms for NVIDIA AI Products (found at https://www.nvidia.com/en-us/agreements/enterprise-software/product-specific-terms-for-ai-products/).
+
+Use of this model is governed by the NVIDIA Community Model License Agreement (found at https://www.nvidia.com/en-us/agreements/enterprise-software/nvidia-community-models-license/).
+
+ADDITIONAL INFORMATION: Llama 3.2 Community License Agreement (https://www.llama.com/llama3_2/license/). Built with Llama.
+
+A copy of this license can be found under /opt/nim/LICENSE.
+Third Party Software Attributions and Licenses can be found under /opt/nim/acknowledgements.txt.
+
+Overriding NIM_LOG_LEVEL: replacing NIM_LOG_LEVEL=unset with NIM_LOG_LEVEL=INFO
+HF_HOME is set to /opt/nim/.cache/huggingface
+INFO 2026-02-28 10:17:21.011 __init__.py:413] Appending: /opt/nim to PYTHONPATH: ['/opt/nim/start_server.d', '/usr/lib/python312.zip', '/usr/lib/python3.12', '/usr/lib/python3.12/lib-dynload', '/usr/local/lib/python3.12/dist-packages', '/usr/lib/python3/dist-packages']
+INFO 2026-02-28 10:17:21.291 profiles.py:208] Matched profile_id in manifest from env NIM_MODEL_PROFILE to: 4aa05527bed7c338689c9418e81d029fa03a2b58569aedda792e8d5af6abe91c
+NIM_MODEL_PROFILE is set to 4aa05527bed7c338689c9418e81d029fa03a2b58569aedda792e8d5af6abe91c
+INFO 2026-02-28 10:17:21.503 __init__.py:413] Appending: /opt/nim to PYTHONPATH: ['/opt/nim/start_server.d', '/usr/lib/python312.zip', '/usr/lib/python3.12', '/usr/lib/python3.12/lib-dynload', '/usr/local/lib/python3.12/dist-packages', '/usr/lib/python3/dist-packages']
+INFO 2026-02-28 10:17:23.069 profiles.py:98] Registered custom profile selectors: []
+INFO 2026-02-28 10:17:23.069 profiles.py:208] Matched profile_id in manifest from env NIM_MODEL_PROFILE to: 4aa05527bed7c338689c9418e81d029fa03a2b58569aedda792e8d5af6abe91c
+INFO 2026-02-28 10:17:23.070 nim_sdk.py:299] Using the profile selected by the profile selector: 4aa05527bed7c338689c9418e81d029fa03a2b58569aedda792e8d5af6abe91c
+INFO 2026-02-28 10:17:23.070 nim_sdk.py:308] Downloading manifest profile: 4aa05527bed7c338689c9418e81d029fa03a2b58569aedda792e8d5af6abe91c
+INFO 2026-02-28 10:17:23.148 nim_sdk.py:328] Using the workspace specified during init: /opt/nim/workspace
+INFO 2026-02-28 10:17:23.149 nim_sdk.py:341] Materializing workspace to: /opt/nim/workspace
+INFO 2026-02-28 10:17:26.602 __init__.py:413] Appending: /opt/nim to PYTHONPATH: ['/usr/local/bin', '/usr/lib/python312.zip', '/usr/lib/python3.12', '/usr/lib/python3.12/lib-dynload', '/usr/local/lib/python3.12/dist-packages', '/usr/lib/python3/dist-packages']
+INFO 2026-02-28 10:17:23.113 lib.rs:203] File: special_tokens_map.json found in cache: "/opt/nim/.cache/ngc/hub/models-
+-nim--nvidia--llama-3.2-nv-rerankqa-1b-v2/snapshots/tokenizer-8192-3fe66485/special_tokens_map.json"
+INFO 2026-02-28 10:17:23.113 public.rs:52] Skipping download, using cached copy of file: special_tokens_map.json at pat
+h: "/opt/nim/.cache/ngc/hub/models--nim--nvidia--llama-3.2-nv-rerankqa-1b-v2/snapshots/tokenizer-8192-3fe66485/special_
+tokens_map.json"
+INFO 2026-02-28 10:17:23.121 lib.rs:203] File: tokenizer.json found in cache: "/opt/nim/.cache/ngc/hub/models--nim--nvi
+dia--llama-3.2-nv-rerankqa-1b-v2/snapshots/tokenizer-8192-3fe66485/tokenizer.json"
+INFO 2026-02-28 10:17:23.121 public.rs:52] Skipping download, using cached copy of file: tokenizer.json at path: "/opt/
+nim/.cache/ngc/hub/models--nim--nvidia--llama-3.2-nv-rerankqa-1b-v2/snapshots/tokenizer-8192-3fe66485/tokenizer.json"
+INFO 2026-02-28 10:17:23.127 lib.rs:203] File: checksums.blake3 found in cache: "/opt/nim/.cache/ngc/hub/models--nim--n
+vidia--llama-3.2-nv-rerankqa-1b-v2/snapshots/l40sx1-trt-fp16-k5no-6dx4q/checksums.blake3"
+INFO 2026-02-28 10:17:23.127 public.rs:52] Skipping download, using cached copy of file: checksums.blake3 at path: "/op
+t/nim/.cache/ngc/hub/models--nim--nvidia--llama-3.2-nv-rerankqa-1b-v2/snapshots/l40sx1-trt-fp16-k5no-6dx4q/checksums.bl
+ake3"
+INFO 2026-02-28 10:17:23.132 lib.rs:203] File: tokenizer_config.json found in cache: "/opt/nim/.cache/ngc/hub/models--n
+im--nvidia--llama-3.2-nv-rerankqa-1b-v2/snapshots/tokenizer-8192-3fe66485/tokenizer_config.json"
+INFO 2026-02-28 10:17:23.132 public.rs:52] Skipping download, using cached copy of file: tokenizer_config.json at path:
+ "/opt/nim/.cache/ngc/hub/models--nim--nvidia--llama-3.2-nv-rerankqa-1b-v2/snapshots/tokenizer-8192-3fe66485/tokenizer_
+config.json"
+INFO 2026-02-28 10:17:23.138 lib.rs:203] File: memory_footprint.json found in cache: "/opt/nim/.cache/ngc/hub/models--n
+im--nvidia--llama-3.2-nv-rerankqa-1b-v2/snapshots/l40sx1-trt-fp16-k5no-6dx4q/memory_footprint.json"
+INFO 2026-02-28 10:17:23.138 public.rs:52] Skipping download, using cached copy of file: memory_footprint.json at path:
+ "/opt/nim/.cache/ngc/hub/models--nim--nvidia--llama-3.2-nv-rerankqa-1b-v2/snapshots/l40sx1-trt-fp16-k5no-6dx4q/memory_
+footprint.json"
+INFO 2026-02-28 10:17:23.143 lib.rs:203] File: metadata.json found in cache: "/opt/nim/.cache/ngc/hub/models--nim--nvid
+ia--llama-3.2-nv-rerankqa-1b-v2/snapshots/l40sx1-trt-fp16-k5no-6dx4q/metadata.json"
+INFO 2026-02-28 10:17:23.143 public.rs:52] Skipping download, using cached copy of file: metadata.json at path: "/opt/n
+im/.cache/ngc/hub/models--nim--nvidia--llama-3.2-nv-rerankqa-1b-v2/snapshots/l40sx1-trt-fp16-k5no-6dx4q/metadata.json"
+INFO 2026-02-28 10:17:23.148 lib.rs:203] File: model.plan found in cache: "/opt/nim/.cache/ngc/hub/models--nim--nvidia-
+-llama-3.2-nv-rerankqa-1b-v2/snapshots/l40sx1-trt-fp16-k5no-6dx4q/model.plan"
+INFO 2026-02-28 10:17:23.148 public.rs:52] Skipping download, using cached copy of file: model.plan at path: "/opt/nim/
+.cache/ngc/hub/models--nim--nvidia--llama-3.2-nv-rerankqa-1b-v2/snapshots/l40sx1-trt-fp16-k5no-6dx4q/model.plan"
+OTEL Logging handler requested, but Python logging auto-instrumentation not set up. Set OTEL_PYTHON_LOGGING_AUTO_INSTRU
+MENTATION_ENABLED=true to enable logging auto-instrumentation.
+OTEL Logging handler requested, but Python logging auto-instrumentation not set up. Set OTEL_PYTHON_LOGGING_AUTO_INSTRU
+MENTATION_ENABLED=true to enable logging auto-instrumentation.
+2026-02-28T10:17:26Z INFO: nimlib - Appending: /opt/nim to PYTHONPATH: ['/usr/local/bin', '/usr/lib/python312.zip', '/u
+sr/lib/python3.12', '/usr/lib/python3.12/lib-dynload', '/usr/local/lib/python3.12/dist-packages', '/usr/lib/python3/dis
+t-packages']
+2026-02-28T10:17:26Z INFO: nimlib.profiles - Matched profile_id in manifest from env NIM_MODEL_PROFILE to: 4aa05527bed7
+c338689c9418e81d029fa03a2b58569aedda792e8d5af6abe91c
+INFO 2026-02-28 10:17:26.826 profiles.py:208] Matched profile_id in manifest from env NIM_MODEL_PROFILE to: 4aa05527bed7c338689c9418e81d029fa03a2b58569aedda792e8d5af6abe91c
+2026-02-28T10:17:26Z INFO: nimlib.nim_sdk - Using the profile specified by the user: 4aa05527bed7c338689c9418e81d029fa0
+3a2b58569aedda792e8d5af6abe91c
+2026-02-28T10:17:26Z INFO: nimlib.nim_sdk - Downloading manifest profile: 4aa05527bed7c338689c9418e81d029fa03a2b58569ae
+dda792e8d5af6abe91c
+INFO 2026-02-28 10:17:26.837 lib.rs:203] File: memory_footprint.json found in cache: "/opt/nim/.cache/ngc/hub/models--n
+im--nvidia--llama-3.2-nv-rerankqa-1b-v2/snapshots/l40sx1-trt-fp16-k5no-6dx4q/memory_footprint.json"
+INFO 2026-02-28 10:17:26.826 nim_sdk.py:294] Using the profile specified by the user: 4aa05527bed7c338689c9418e81d029fa03a2b58569aedda792e8d5af6abe91c
+INFO 2026-02-28 10:17:26.826 nim_sdk.py:308] Downloading manifest profile: 4aa05527bed7c338689c9418e81d029fa03a2b58569aedda792e8d5af6abe91c
+INFO 2026-02-28 10:17:26.837 public.rs:52] Skipping download, using cached copy of file: memory_footprint.json at path:
+ "/opt/nim/.cache/ngc/hub/models--nim--nvidia--llama-3.2-nv-rerankqa-1b-v2/snapshots/l40sx1-trt-fp16-k5no-6dx4q/memory_
+footprint.json"
+INFO 2026-02-28 10:17:26.843 lib.rs:203] File: checksums.blake3 found in cache: "/opt/nim/.cache/ngc/hub/models--nim--n
+vidia--llama-3.2-nv-rerankqa-1b-v2/snapshots/l40sx1-trt-fp16-k5no-6dx4q/checksums.blake3"
+INFO 2026-02-28 10:17:26.843 public.rs:52] Skipping download, using cached copy of file: checksums.blake3 at path: "/op
+t/nim/.cache/ngc/hub/models--nim--nvidia--llama-3.2-nv-rerankqa-1b-v2/snapshots/l40sx1-trt-fp16-k5no-6dx4q/checksums.bl
+ake3"
+INFO 2026-02-28 10:17:26.848 lib.rs:203] File: metadata.json found in cache: "/opt/nim/.cache/ngc/hub/models--nim--nvid
+ia--llama-3.2-nv-rerankqa-1b-v2/snapshots/l40sx1-trt-fp16-k5no-6dx4q/metadata.json"
+INFO 2026-02-28 10:17:26.848 public.rs:52] Skipping download, using cached copy of file: metadata.json at path: "/opt/n
+im/.cache/ngc/hub/models--nim--nvidia--llama-3.2-nv-rerankqa-1b-v2/snapshots/l40sx1-trt-fp16-k5no-6dx4q/metadata.json"
+INFO 2026-02-28 10:17:26.854 lib.rs:203] File: model.plan found in cache: "/opt/nim/.cache/ngc/hub/models--nim--nvidia-
+-llama-3.2-nv-rerankqa-1b-v2/snapshots/l40sx1-trt-fp16-k5no-6dx4q/model.plan"
+INFO 2026-02-28 10:17:26.854 public.rs:52] Skipping download, using cached copy of file: model.plan at path: "/opt/nim/
+.cache/ngc/hub/models--nim--nvidia--llama-3.2-nv-rerankqa-1b-v2/snapshots/l40sx1-trt-fp16-k5no-6dx4q/model.plan"
+INFO 2026-02-28 10:17:26.859 lib.rs:203] File: special_tokens_map.json found in cache: "/opt/nim/.cache/ngc/hub/models-
+-nim--nvidia--llama-3.2-nv-rerankqa-1b-v2/snapshots/tokenizer-8192-3fe66485/special_tokens_map.json"
+INFO 2026-02-28 10:17:26.871 nim_sdk.py:328] Using the workspace specified during init: /opt/nim/workspace
+INFO 2026-02-28 10:17:26.871 nim_sdk.py:341] Materializing workspace to: /opt/nim/workspace
+INFO 2026-02-28 10:17:27.618 __init__.py:413] Appending: /opt/nim to PYTHONPATH: ['/usr/local/bin', '/usr/lib/python312.zip', '/usr/lib/python3.12', '/usr/lib/python3.12/lib-dynload', '/usr/local/lib/python3.12/dist-packages', '/usr/lib/python3/dist-packages']
+INFO 2026-02-28 10:17:29.200 repository.py:154] Loaded tokenizer from /opt/nim/workspace/tokenizer
+WARNING 2026-02-28 10:17:32.583 tensor_rt_model_builder.py:110] Failed to convert tensor logits profile shapes to tuples, using empty tuples instead
+WARNING 2026-02-28 10:17:32.584 tensor_rt_model_builder.py:110] Failed to convert tensor logits profile shapes to tuples, using empty tuples instead
+WARNING 2026-02-28 10:17:32.584 tensor_rt_model_builder.py:110] Failed to convert tensor logits profile shapes to tuples, using empty tuples instead
+WARNING 2026-02-28 10:17:32.584 tensor_rt_model_builder.py:110] Failed to convert tensor logits profile shapes to tuples, using empty tuples instead
+WARNING 2026-02-28 10:17:32.585 tensor_rt_model_builder.py:110] Failed to convert tensor logits profile shapes to tuples, using empty tuples instead
+WARNING 2026-02-28 10:17:32.585 tensor_rt_model_builder.py:110] Failed to convert tensor logits profile shapes to tuples, using empty tuples instead
+WARNING 2026-02-28 10:17:32.585 tensor_rt_model_builder.py:110] Failed to convert tensor logits profile shapes to tuples, using empty tuples instead
+INFO 2026-02-28 10:17:32.673 tensor_rt_model_builder.py:151] Available TRT engine profiles: 
+  - (max_batch_size=1, max_seq_length=8192)
+  - (max_batch_size=8, max_seq_length=8192)
+  - (max_batch_size=16, max_seq_length=8192)
+  - (max_batch_size=30, max_seq_length=8192)
+  - (max_batch_size=30, max_seq_length=1024)
+  - (max_batch_size=30, max_seq_length=2048)
+  - (max_batch_size=30, max_seq_length=4096)
+INFO 2026-02-28 10:17:32.673 repository.py:256] Selected TensorRT engine profile: profile_index=3 inputs=[TensorInfo(name='input_ids', dtype='int64', shape=(-1, -1), opt_shapes=(16, 512), max_shapes=(30, 8192), min_shapes=(1, 2)), TensorInfo(name='attention_mask', dtype='int64', shape=(-1, -1), opt_shapes=(16, 512), max_shapes=(30, 8192), min_shapes=(1, 2))] outputs=[TensorInfo(name='logits', dtype='float32', shape=(1, 1), opt_shapes=(), max_shapes=(), min_shapes=())]
+INFO 2026-02-28 10:17:32.677 tensor_rt_model_builder.py:228] Setting number of models for '_nvidia_llama_3_2_nv_rerankqa_1b_v2_model' to: 1
+INFO 2026-02-28 10:17:32.677 tensor_rt_model_builder.py:231] Using TensorRT max_batch_size: 30
+INFO 2026-02-28 10:17:32.677 tensor_rt_model_builder.py:244] Python model successfully generated and written to: /opt/nim/tmp/run/triton-model-repository/_nvidia_llama_3_2_nv_rerankqa_1b_v2_model/1/model.py
+INFO 2026-02-28 10:17:32.902 bls_model_builder.py:75] BLS model successfully generated and written to: /opt/nim/tmp/run/triton-model-repository/nvidia_llama_3_2_nv_rerankqa_1b_v2/1/model.py
+INFO 2026-02-28 10:17:32.931 repository.py:529] Successfully saved model service config to /opt/nim/tmp/run/triton-model-repository/service_config.yaml
+INFO 2026-02-28 10:17:32.931 repository.py:531] Sucessfully generated Triton Model Repository at /opt/nim/tmp/run/triton-model-repository
+INFO 2026-02-28 10:17:26.859 public.rs:52] Skipping download, using cached copy of file: special_tokens_map.json at pat
+h: "/opt/nim/.cache/ngc/hub/models--nim--nvidia--llama-3.2-nv-rerankqa-1b-v2/snapshots/tokenizer-8192-3fe66485/special_
+tokens_map.json"
+INFO 2026-02-28 10:17:26.864 lib.rs:203] File: tokenizer.json found in cache: "/opt/nim/.cache/ngc/hub/models--nim--nvi
+dia--llama-3.2-nv-rerankqa-1b-v2/snapshots/tokenizer-8192-3fe66485/tokenizer.json"
+INFO 2026-02-28 10:17:26.864 public.rs:52] Skipping download, using cached copy of file: tokenizer.json at path: "/opt/
+nim/.cache/ngc/hub/models--nim--nvidia--llama-3.2-nv-rerankqa-1b-v2/snapshots/tokenizer-8192-3fe66485/tokenizer.json"
+INFO 2026-02-28 10:17:26.870 lib.rs:203] File: tokenizer_config.json found in cache: "/opt/nim/.cache/ngc/hub/models--n
+im--nvidia--llama-3.2-nv-rerankqa-1b-v2/snapshots/tokenizer-8192-3fe66485/tokenizer_config.json"
+INFO 2026-02-28 10:17:26.870 public.rs:52] Skipping download, using cached copy of file: tokenizer_config.json at path:
+ "/opt/nim/.cache/ngc/hub/models--nim--nvidia--llama-3.2-nv-rerankqa-1b-v2/snapshots/tokenizer-8192-3fe66485/tokenizer_
+config.json"
+2026-02-28T10:17:26Z INFO: nimlib.nim_sdk - Using the workspace specified during init: /opt/nim/workspace
+2026-02-28T10:17:26Z INFO: nimlib.nim_sdk - Materializing workspace to: /opt/nim/workspace
+OTEL Logging handler requested, but Python logging auto-instrumentation not set up. Set OTEL_PYTHON_LOGGING_AUTO_INSTRU
+MENTATION_ENABLED=true to enable logging auto-instrumentation.
+2026-02-28T10:17:29Z INFO: nemo-retriever-reranking-triton-gen - Loaded tokenizer from /opt/nim/workspace/tokenizer
+2026-02-28T10:17:32Z WARNING: nemo-retriever-reranking-triton-gen - Failed to convert tensor logits profile shapes to t
+uples, using empty tuples instead
+2026-02-28T10:17:32Z WARNING: nemo-retriever-reranking-triton-gen - Failed to convert tensor logits profile shapes to t
+uples, using empty tuples instead
+2026-02-28T10:17:32Z WARNING: nemo-retriever-reranking-triton-gen - Failed to convert tensor logits profile shapes to t
+uples, using empty tuples instead
+2026-02-28T10:17:32Z WARNING: nemo-retriever-reranking-triton-gen - Failed to convert tensor logits profile shapes to t
+uples, using empty tuples instead
+2026-02-28T10:17:32Z WARNING: nemo-retriever-reranking-triton-gen - Failed to convert tensor logits profile shapes to t
+uples, using empty tuples instead
+2026-02-28T10:17:32Z WARNING: nemo-retriever-reranking-triton-gen - Failed to convert tensor logits profile shapes to t
+uples, using empty tuples instead
+2026-02-28T10:17:32Z WARNING: nemo-retriever-reranking-triton-gen - Failed to convert tensor logits profile shapes to t
+uples, using empty tuples instead
+2026-02-28T10:17:32Z INFO: nemo-retriever-reranking-triton-gen - Available TRT engine profiles: 
+  - (max_batch_size=1, max_seq_length=8192)
+  - (max_batch_size=8, max_seq_length=8192)
+  - (max_batch_size=16, max_seq_length=8192)
+  - (max_batch_size=30, max_seq_length=8192)
+  - (max_batch_size=30, max_seq_length=1024)
+  - (max_batch_size=30, max_seq_length=2048)
+  - (max_batch_size=30, max_seq_length=4096)
+2026-02-28T10:17:32Z INFO: nemo-retriever-reranking-triton-gen - Selected TensorRT engine profile: profile_index=3 inpu
+ts=[TensorInfo(name='input_ids', dtype='int64', shape=(-1, -1), opt_shapes=(16, 512), max_shapes=(30, 8192), min_shapes
+=(1, 2)), TensorInfo(name='attention_mask', dtype='int64', shape=(-1, -1), opt_shapes=(16, 512), max_shapes=(30, 8192),
+ min_shapes=(1, 2))] outputs=[TensorInfo(name='logits', dtype='float32', shape=(1, 1), opt_shapes=(), max_shapes=(), mi
+n_shapes=())]
+2026-02-28T10:17:32Z INFO: nemo-retriever-reranking-triton-gen - Setting number of models for '_nvidia_llama_3_2_nv_rer
+ankqa_1b_v2_model' to: 1
+2026-02-28T10:17:32Z INFO: nemo-retriever-reranking-triton-gen - Using TensorRT max_batch_size: 30
+2026-02-28T10:17:32Z INFO: nemo-retriever-reranking-triton-gen - Python model successfully generated and written to: /o
+pt/nim/tmp/run/triton-model-repository/_nvidia_llama_3_2_nv_rerankqa_1b_v2_model/1/model.py
+2026-02-28T10:17:32Z INFO: nemo-retriever-reranking-triton-gen - BLS model successfully generated and written to: /opt/
+nim/tmp/run/triton-model-repository/nvidia_llama_3_2_nv_rerankqa_1b_v2/1/model.py
+2026-02-28T10:17:32Z INFO: nemo-retriever-reranking-triton-gen - Successfully saved model service config to /opt/nim/tm
+p/run/triton-model-repository/service_config.yaml
+2026-02-28T10:17:32Z INFO: nemo-retriever-reranking-triton-gen - Sucessfully generated Triton Model Repository at /opt/
+nim/tmp/run/triton-model-repository
+OTEL Logging handler requested, but Python logging auto-instrumentation not set up. Set OTEL_PYTHON_LOGGING_AUTO_INSTRU
+MENTATION_ENABLED=true to enable logging auto-instrumentation.
+2026-02-28T10:17:33Z INFO: nimlib - Appending: /opt/nim to PYTHONPATH: ['/usr/local/bin', '/usr/lib/python312.zip', '/u
+sr/lib/python3.12', '/usr/lib/python3.12/lib-dynload', '/usr/local/lib/python3.12/dist-packages', '/usr/lib/python3/dis
+t-packages']
+2026-02-28T10:17:34Z INFO: nimlib.nim_inference_api_builder.api - Serving endpoints:
+  0.0.0.0:8000/v1/triton-inference-statistics (GET)
+  0.0.0.0:8000/v1/models (GET)
+  0.0.0.0:8000/v1/ranking (POST)
+  0.0.0.0:8000/v1/health/live (GET)
+  0.0.0.0:8000/v1/health/ready (GET)
+  0.0.0.0:8000/v1/metrics (GET)
+  0.0.0.0:8000/v1/license (GET)
+  0.0.0.0:8000/v1/metadata (GET)
+  0.0.0.0:8000/v1/manifest (GET)
+2026-02-28T10:17:34Z INFO: nimlib.nim_inference_api_builder.api - {'message': 'Starting HTTP Inference server', 'port':
+ 8000, 'workers_count': 8, 'host': '0.0.0.0', 'log_level': 'info', 'SSL': 'disabled'}
+2026-02-28T10:17:34Z INFO: uvicorn.error - Uvicorn running on http://0.0.0.0:8000 (Press CTRL+C to quit)
+2026-02-28T10:17:34Z INFO: uvicorn.error - Started parent process [248]
+OTEL Logging handler requested, but Python logging auto-instrumentation not set up. Set OTEL_PYTHON_LOGGING_AUTO_INSTRU
+MENTATION_ENABLED=true to enable logging auto-instrumentation.
+OTEL Logging handler requested, but Python logging auto-instrumentation not set up. Set OTEL_PYTHON_LOGGING_AUTO_INSTRU
+MENTATION_ENABLED=true to enable logging auto-instrumentation.
+OTEL Logging handler requested, but Python logging auto-instrumentation not set up. Set OTEL_PYTHON_LOGGING_AUTO_INSTRU
+MENTATION_ENABLED=true to enable logging auto-instrumentation.
+INFO 2026-02-28 10:17:33.702 __init__.py:413] Appending: /opt/nim to PYTHONPATH: ['/usr/local/bin', '/usr/lib/python312.zip', '/usr/lib/python3.12', '/usr/lib/python3.12/lib-dynload', '/usr/local/lib/python3.12/dist-packages', '/usr/lib/python3/dist-packages']
+I0228 10:17:33.757896 247 pinned_memory_manager.cc:277] "Pinned memory pool is created at '0x204c00000' with size 268435456"
+I0228 10:17:33.758343 247 cuda_memory_manager.cc:107] "CUDA memory pool is created on device 0 with size 67108864"
+I0228 10:17:33.763211 247 model_lifecycle.cc:473] "loading: _nvidia_llama_3_2_nv_rerankqa_1b_v2_model:1"
+I0228 10:17:33.763296 247 model_lifecycle.cc:473] "loading: nvidia_llama_3_2_nv_rerankqa_1b_v2:1"
+I0228 10:17:33.999400 247 tensorrt.cc:65] "TRITONBACKEND_Initialize: tensorrt"
+I0228 10:17:33.999451 247 tensorrt.cc:75] "Triton TRITONBACKEND API version: 1.19"
+I0228 10:17:33.999456 247 tensorrt.cc:81] "'tensorrt' TRITONBACKEND API version: 1.19"
+I0228 10:17:33.999460 247 tensorrt.cc:105] "backend configuration:\n{\"cmdline\":{\"auto-complete-config\":\"true\",\"backend-directory\":\"/opt/tritonserver/backends\",\"min-compute-capability\":\"6.000000\",\"version-compatible\":\"true\",\"default-max-batch-size\":\"4\"}}"
+I0228 10:17:34.001185 247 tensorrt.cc:231] "TRITONBACKEND_ModelInitialize: _nvidia_llama_3_2_nv_rerankqa_1b_v2_model (version 1)"
+INFO 2026-02-28 10:17:34.040 __init__.py:413] Appending: /opt/nim to PYTHONPATH: ['', '/usr/lib/python312.zip', '/usr/lib/python3.12', '/usr/lib/python3.12/lib-dynload', '/usr/local/lib/python3.12/dist-packages', '/usr/lib/python3/dist-packages', '/opt/nim/tmp/run/triton-model-repository/nvidia_llama_3_2_nv_rerankqa_1b_v2/1', '/opt/nim/tmp/run/triton-model-repository/nvidia_llama_3_2_nv_rerankqa_1b_v2', '/opt/tritonserver/backends/python']
+INFO 2026-02-28 10:17:34.045 http_api.py:52] Serving endpoints:
+  0.0.0.0:8000/v1/triton-inference-statistics (GET)
+  0.0.0.0:8000/v1/models (GET)
+  0.0.0.0:8000/v1/ranking (POST)
+  0.0.0.0:8000/v1/health/live (GET)
+  0.0.0.0:8000/v1/health/ready (GET)
+  0.0.0.0:8000/v1/metrics (GET)
+  0.0.0.0:8000/v1/license (GET)
+  0.0.0.0:8000/v1/metadata (GET)
+  0.0.0.0:8000/v1/manifest (GET)
+INFO 2026-02-28 10:17:34.046 http_api.py:73] {'message': 'Starting HTTP Inference server', 'port': 8000, 'workers_count': 8, 'host': '0.0.0.0', 'log_level': 'info', 'SSL': 'disabled'}
+INFO 2026-02-28 10:17:35.668 profiles.py:98] Registered custom profile selectors: []
+INFO 2026-02-28 10:17:35.669 profiles.py:208] Matched profile_id in manifest from env NIM_MODEL_PROFILE to: 4aa05527bed7c338689c9418e81d029fa03a2b58569aedda792e8d5af6abe91c
+INFO 2026-02-28 10:17:35.706 profiles.py:98] Registered custom profile selectors: []
+INFO 2026-02-28 10:17:35.706 profiles.py:208] Matched profile_id in manifest from env NIM_MODEL_PROFILE to: 4aa05527bed7c338689c9418e81d029fa03a2b58569aedda792e8d5af6abe91c
+INFO 2026-02-28 10:17:35.733 profiles.py:98] Registered custom profile selectors: []
+INFO 2026-02-28 10:17:35.734 profiles.py:208] Matched profile_id in manifest from env NIM_MODEL_PROFILE to: 4aa05527bed7c338689c9418e81d029fa03a2b58569aedda792e8d5af6abe91c
+INFO 2026-02-28 10:17:35.743 profiles.py:98] Registered custom profile selectors: []
+INFO 2026-02-28 10:17:35.743 profiles.py:208] Matched profile_id in manifest from env NIM_MODEL_PROFILE to: 4aa05527bed7c338689c9418e81d029fa03a2b58569aedda792e8d5af6abe91c
+INFO 2026-02-28 10:17:35.767 profiles.py:98] Registered custom profile selectors: []
+INFO 2026-02-28 10:17:35.767 profiles.py:208] Matched profile_id in manifest from env NIM_MODEL_PROFILE to: 4aa05527bed7c338689c9418e81d029fa03a2b58569aedda792e8d5af6abe91c
+INFO 2026-02-28 10:17:35.768 profiles.py:98] Registered custom profile selectors: []
+INFO 2026-02-28 10:17:35.769 profiles.py:208] Matched profile_id in manifest from env NIM_MODEL_PROFILE to: 4aa05527bed7c338689c9418e81d029fa03a2b58569aedda792e8d5af6abe91c
+INFO 2026-02-28 10:17:35.769 profiles.py:98] Registered custom profile selectors: []
+INFO 2026-02-28 10:17:35.770 profiles.py:208] Matched profile_id in manifest from env NIM_MODEL_PROFILE to: 4aa05527bed7c338689c9418e81d029fa03a2b58569aedda792e8d5af6abe91c
+INFO 2026-02-28 10:17:35.815 profiles.py:98] Registered custom profile selectors: []
+INFO 2026-02-28 10:17:35.816 profiles.py:208] Matched profile_id in manifest from env NIM_MODEL_PROFILE to: 4aa05527bed7c338689c9418e81d029fa03a2b58569aedda792e8d5af6abe91c
+I0228 10:17:37.685664 247 python_be.cc:2289] "TRITONBACKEND_ModelInstanceInitialize: nvidia_llama_3_2_nv_rerankqa_1b_v2_0_0 (CPU device 0)"
+INFO 2026-02-28 10:17:38.252 __init__.py:413] Appending: /opt/nim to PYTHONPATH: ['', '/usr/lib/python312.zip', '/usr/lib/python3.12', '/usr/lib/python3.12/lib-dynload', '/usr/local/lib/python3.12/dist-packages', '/usr/lib/python3/dist-packages', '/opt/nim/tmp/run/triton-model-repository/nvidia_llama_3_2_nv_rerankqa_1b_v2/1', '/opt/nim/tmp/run/triton-model-repository/nvidia_llama_3_2_nv_rerankqa_1b_v2', '/opt/tritonserver/backends/python']
+OTEL Logging handler requested, but Python logging auto-instrumentation not set up. Set OTEL_PYTHON_LOGGING_AUTO_INSTRU
+MENTATION_ENABLED=true to enable logging auto-instrumentation.
+OTEL Logging handler requested, but Python logging auto-instrumentation not set up. Set OTEL_PYTHON_LOGGING_AUTO_INSTRU
+MENTATION_ENABLED=true to enable logging auto-instrumentation.
+OTEL Logging handler requested, but Python logging auto-instrumentation not set up. Set OTEL_PYTHON_LOGGING_AUTO_INSTRU
+MENTATION_ENABLED=true to enable logging auto-instrumentation.
+OTEL Logging handler requested, but Python logging auto-instrumentation not set up. Set OTEL_PYTHON_LOGGING_AUTO_INSTRU
+MENTATION_ENABLED=true to enable logging auto-instrumentation.
+OTEL Logging handler requested, but Python logging auto-instrumentation not set up. Set OTEL_PYTHON_LOGGING_AUTO_INSTRU
+MENTATION_ENABLED=true to enable logging auto-instrumentation.
+OTEL Logging handler requested, but Python logging auto-instrumentation not set up. Set OTEL_PYTHON_LOGGING_AUTO_INSTRU
+MENTATION_ENABLED=true to enable logging auto-instrumentation.
+2026-02-28T10:17:35Z INFO: uvicorn.error - Started server process [320]
+2026-02-28T10:17:35Z INFO: uvicorn.error - Waiting for application startup.
+2026-02-28T10:17:35Z INFO: uvicorn.error - Started server process [318]
+2026-02-28T10:17:35Z INFO: uvicorn.error - Waiting for application startup.
+2026-02-28T10:17:35Z INFO: uvicorn.error - Started server process [316]
+2026-02-28T10:17:35Z INFO: uvicorn.error - Waiting for application startup.
+2026-02-28T10:17:35Z INFO: uvicorn.error - Started server process [317]
+2026-02-28T10:17:35Z INFO: uvicorn.error - Waiting for application startup.
+2026-02-28T10:17:35Z INFO: uvicorn.error - Started server process [323]
+2026-02-28T10:17:35Z INFO: uvicorn.error - Waiting for application startup.
+2026-02-28T10:17:35Z INFO: uvicorn.error - Started server process [319]
+2026-02-28T10:17:35Z INFO: uvicorn.error - Waiting for application startup.
+2026-02-28T10:17:35Z INFO: uvicorn.error - Started server process [321]
+2026-02-28T10:17:35Z INFO: uvicorn.error - Waiting for application startup.
+2026-02-28T10:17:35Z INFO: nimlib.profiles - Registered custom profile selectors: []
+2026-02-28T10:17:35Z INFO: nimlib.profiles - Matched profile_id in manifest from env NIM_MODEL_PROFILE to: 4aa05527bed7
+c338689c9418e81d029fa03a2b58569aedda792e8d5af6abe91c
+2026-02-28T10:17:35Z INFO: root - Loading service config from /opt/nim/tmp/run/triton-model-repository/service_config.y
+aml
+2026-02-28T10:17:35Z INFO: uvicorn.error - Application startup complete.
+2026-02-28T10:17:35Z INFO: nimlib.profiles - Registered custom profile selectors: []
+2026-02-28T10:17:35Z INFO: nimlib.profiles - Matched profile_id in manifest from env NIM_MODEL_PROFILE to: 4aa05527bed7
+c338689c9418e81d029fa03a2b58569aedda792e8d5af6abe91c
+2026-02-28T10:17:35Z INFO: root - Loading service config from /opt/nim/tmp/run/triton-model-repository/service_config.y
+aml
+2026-02-28T10:17:35Z INFO: uvicorn.error - Application startup complete.
+2026-02-28T10:17:35Z INFO: uvicorn.error - Started server process [322]
+2026-02-28T10:17:35Z INFO: uvicorn.error - Waiting for application startup.
+2026-02-28T10:17:35Z INFO: nimlib.profiles - Registered custom profile selectors: []
+2026-02-28T10:17:35Z INFO: nimlib.profiles - Matched profile_id in manifest from env NIM_MODEL_PROFILE to: 4aa05527bed7
+c338689c9418e81d029fa03a2b58569aedda792e8d5af6abe91c
+2026-02-28T10:17:35Z INFO: root - Loading service config from /opt/nim/tmp/run/triton-model-repository/service_config.y
+aml
+2026-02-28T10:17:35Z INFO: uvicorn.error - Application startup complete.
+2026-02-28T10:17:35Z INFO: nimlib.profiles - Registered custom profile selectors: []
+2026-02-28T10:17:35Z INFO: nimlib.profiles - Matched profile_id in manifest from env NIM_MODEL_PROFILE to: 4aa05527bed7
+c338689c9418e81d029fa03a2b58569aedda792e8d5af6abe91c
+2026-02-28T10:17:35Z INFO: root - Loading service config from /opt/nim/tmp/run/triton-model-repository/service_config.y
+aml
+2026-02-28T10:17:35Z INFO: uvicorn.error - Application startup complete.
+2026-02-28T10:17:35Z INFO: nimlib.profiles - Registered custom profile selectors: []
+2026-02-28T10:17:35Z INFO: nimlib.profiles - Matched profile_id in manifest from env NIM_MODEL_PROFILE to: 4aa05527bed7
+c338689c9418e81d029fa03a2b58569aedda792e8d5af6abe91c
+2026-02-28T10:17:35Z INFO: root - Loading service config from /opt/nim/tmp/run/triton-model-repository/service_config.y
+aml
+2026-02-28T10:17:35Z INFO: nimlib.profiles - Registered custom profile selectors: []
+2026-02-28T10:17:35Z INFO: nimlib.profiles - Matched profile_id in manifest from env NIM_MODEL_PROFILE to: 4aa05527bed7
+c338689c9418e81d029fa03a2b58569aedda792e8d5af6abe91c
+2026-02-28T10:17:35Z INFO: nimlib.profiles - Registered custom profile selectors: []
+2026-02-28T10:17:35Z INFO: nimlib.profiles - Matched profile_id in manifest from env NIM_MODEL_PROFILE to: 4aa05527bed7
+c338689c9418e81d029fa03a2b58569aedda792e8d5af6abe91c
+2026-02-28T10:17:35Z INFO: root - Loading service config from /opt/nim/tmp/run/triton-model-repository/service_config.y
+aml
+2026-02-28T10:17:35Z INFO: root - Loading service config from /opt/nim/tmp/run/triton-model-repository/service_config.y
+aml
+2026-02-28T10:17:35Z INFO: uvicorn.error - Application startup complete.
+2026-02-28T10:17:35Z INFO: uvicorn.error - Application startup complete.
+2026-02-28T10:17:35Z INFO: uvicorn.error - Application startup complete.
+2026-02-28T10:17:35Z INFO: nimlib.profiles - Registered custom profile selectors: []
+2026-02-28T10:17:35Z INFO: nimlib.profiles - Matched profile_id in manifest from env NIM_MODEL_PROFILE to: 4aa05527bed7
+c338689c9418e81d029fa03a2b58569aedda792e8d5af6abe91c
+2026-02-28T10:17:35Z INFO: root - Loading service config from /opt/nim/tmp/run/triton-model-repository/service_config.y
+aml
+2026-02-28T10:17:35Z INFO: uvicorn.error - Application startup complete.
+2026-02-28T10:17:37Z INFO: uvicorn.access - 172.17.0.1:42060 - "GET /v1/health/ready HTTP/1.1" 503
+OTEL Logging handler requested, but Python logging auto-instrumentation not set up. Set OTEL_PYTHON_LOGGING_AUTO_INSTRU
+MENTATION_ENABLED=true to enable logging auto-instrumentation.
+2026-02-28T10:17:42Z INFO: uvicorn.access - 172.17.0.1:42060 - "GET /v1/health/ready HTTP/1.1" 503
+I0228 10:17:43.383874 517 pb_stub.cc:2075]  Non-graceful termination detected. 
+2026-02-28T10:17:45Z INFO: uvicorn.access - 172.17.0.1:42060 - "GET /v1/health/ready HTTP/1.1" 503
+2026-02-28T10:17:48Z INFO: uvicorn.access - 172.17.0.1:42060 - "GET /v1/health/ready HTTP/1.1" 503
+2026-02-28T10:17:51Z INFO: uvicorn.access - 172.17.0.1:42060 - "GET /v1/health/ready HTTP/1.1" 503
+2026-02-28T10:17:54Z INFO: uvicorn.access - 172.17.0.1:42060 - "GET /v1/health/ready HTTP/1.1" 503
+2026-02-28T10:17:57Z INFO: uvicorn.access - 172.17.0.1:42060 - "GET /v1/health/ready HTTP/1.1" 503
+2026-02-28T10:18:00Z INFO: uvicorn.access - 172.17.0.1:42060 - "GET /v1/health/ready HTTP/1.1" 503
+2026-02-28T10:18:03Z INFO: uvicorn.access - 172.17.0.1:42060 - "GET /v1/health/ready HTTP/1.1" 503
+2026-02-28T10:18:06Z INFO: uvicorn.access - 172.17.0.1:42060 - "GET /v1/health/ready HTTP/1.1" 503
+2026-02-28T10:18:09Z INFO: uvicorn.access - 172.17.0.1:42060 - "GET /v1/health/ready HTTP/1.1" 503
+2026-02-28T10:18:12Z INFO: uvicorn.access - 172.17.0.1:42060 - "GET /v1/health/ready HTTP/1.1" 503
+2026-02-28T10:18:15Z INFO: uvicorn.access - 172.17.0.1:42060 - "GET /v1/health/ready HTTP/1.1" 503
+2026-02-28T10:18:18Z INFO: uvicorn.access - 172.17.0.1:42060 - "GET /v1/health/ready HTTP/1.1" 503
+2026-02-28T10:18:21Z INFO: uvicorn.access - 172.17.0.1:42060 - "GET /v1/health/ready HTTP/1.1" 503
+2026-02-28T10:18:24Z INFO: uvicorn.access - 172.17.0.1:42060 - "GET /v1/health/ready HTTP/1.1" 503
+2026-02-28T10:18:27Z INFO: uvicorn.access - 172.17.0.1:42060 - "GET /v1/health/ready HTTP/1.1" 503
+2026-02-28T10:18:30Z INFO: uvicorn.access - 172.17.0.1:42060 - "GET /v1/health/ready HTTP/1.1" 503
+2026-02-28T10:18:33Z INFO: uvicorn.access - 172.17.0.1:42060 - "GET /v1/health/ready HTTP/1.1" 503
+2026-02-28T10:18:36Z INFO: uvicorn.access - 172.17.0.1:42060 - "GET /v1/health/ready HTTP/1.1" 503
+2026-02-28T10:18:39Z INFO: uvicorn.access - 172.17.0.1:42060 - "GET /v1/health/ready HTTP/1.1" 503
+2026-02-28T10:18:42Z INFO: uvicorn.access - 172.17.0.1:42060 - "GET /v1/health/ready HTTP/1.1" 503
+2026-02-28T10:18:45Z INFO: uvicorn.access - 172.17.0.1:42060 - "GET /v1/health/ready HTTP/1.1" 503
+2026-02-28T10:18:48Z INFO: uvicorn.access - 172.17.0.1:42060 - "GET /v1/health/ready HTTP/1.1" 503
+2026-02-28T10:18:51Z INFO: uvicorn.access - 172.17.0.1:42060 - "GET /v1/health/ready HTTP/1.1" 503
+2026-02-28T10:18:54Z INFO: uvicorn.access - 172.17.0.1:42060 - "GET /v1/health/ready HTTP/1.1" 503
+2026-02-28T10:18:58Z INFO: uvicorn.access - 172.17.0.1:42060 - "GET /v1/health/ready HTTP/1.1" 503
+2026-02-28T10:19:01Z INFO: uvicorn.access - 172.17.0.1:42060 - "GET /v1/health/ready HTTP/1.1" 503
+2026-02-28T10:19:04Z INFO: uvicorn.access - 172.17.0.1:42060 - "GET /v1/health/ready HTTP/1.1" 503
+2026-02-28T10:19:07Z INFO: uvicorn.access - 172.17.0.1:42060 - "GET /v1/health/ready HTTP/1.1" 503
+2026-02-28T10:19:10Z INFO: uvicorn.access - 172.17.0.1:42060 - "GET /v1/health/ready HTTP/1.1" 503
+2026-02-28T10:19:13Z INFO: uvicorn.access - 172.17.0.1:42060 - "GET /v1/health/ready HTTP/1.1" 503
+2026-02-28T10:19:16Z INFO: uvicorn.access - 172.17.0.1:42060 - "GET /v1/health/ready HTTP/1.1" 503
+2026-02-28T10:19:19Z INFO: uvicorn.access - 172.17.0.1:42060 - "GET /v1/health/ready HTTP/1.1" 503
+2026-02-28T10:19:22Z INFO: uvicorn.access - 172.17.0.1:42060 - "GET /v1/health/ready HTTP/1.1" 503
+2026-02-28T10:19:25Z INFO: uvicorn.access - 172.17.0.1:42060 - "GET /v1/health/ready HTTP/1.1" 503
+2026-02-28T10:19:28Z INFO: uvicorn.access - 172.17.0.1:42060 - "GET /v1/health/ready HTTP/1.1" 503
+2026-02-28T10:19:31Z INFO: uvicorn.access - 172.17.0.1:42060 - "GET /v1/health/ready HTTP/1.1" 503
+2026-02-28T10:19:34Z INFO: uvicorn.access - 172.17.0.1:42060 - "GET /v1/health/ready HTTP/1.1" 503
+2026-02-28T10:19:37Z INFO: uvicorn.access - 172.17.0.1:42060 - "GET /v1/health/ready HTTP/1.1" 503
+2026-02-28T10:19:40Z INFO: uvicorn.access - 172.17.0.1:42060 - "GET /v1/health/ready HTTP/1.1" 503
+2026-02-28T10:19:43Z INFO: uvicorn.access - 172.17.0.1:42060 - "GET /v1/health/ready HTTP/1.1" 503
+2026-02-28T10:19:46Z INFO: uvicorn.access - 172.17.0.1:42060 - "GET /v1/health/ready HTTP/1.1" 503
+2026-02-28T10:19:49Z INFO: uvicorn.access - 172.17.0.1:42060 - "GET /v1/health/ready HTTP/1.1" 503
+2026-02-28T10:19:52Z INFO: uvicorn.access - 172.17.0.1:42060 - "GET /v1/health/ready HTTP/1.1" 503
+2026-02-28T10:19:55Z INFO: uvicorn.access - 172.17.0.1:42060 - "GET /v1/health/ready HTTP/1.1" 503
+2026-02-28T10:19:58Z INFO: uvicorn.access - 172.17.0.1:42060 - "GET /v1/health/ready HTTP/1.1" 503
+2026-02-28T10:20:01Z INFO: uvicorn.access - 172.17.0.1:42060 - "GET /v1/health/ready HTTP/1.1" 503
+2026-02-28T10:20:04Z INFO: uvicorn.access - 172.17.0.1:42060 - "GET /v1/health/ready HTTP/1.1" 503
+2026-02-28T10:20:07Z INFO: uvicorn.access - 172.17.0.1:42060 - "GET /v1/health/ready HTTP/1.1" 503
+2026-02-28T10:20:10Z INFO: uvicorn.access - 172.17.0.1:42060 - "GET /v1/health/ready HTTP/1.1" 503
+2026-02-28T10:20:13Z INFO: uvicorn.access - 172.17.0.1:42060 - "GET /v1/health/ready HTTP/1.1" 503
+2026-02-28T10:20:16Z INFO: uvicorn.access - 172.17.0.1:42060 - "GET /v1/health/ready HTTP/1.1" 503
+2026-02-28T10:20:19Z INFO: uvicorn.access - 172.17.0.1:42060 - "GET /v1/health/ready HTTP/1.1" 503
+2026-02-28T10:20:22Z INFO: uvicorn.access - 172.17.0.1:42060 - "GET /v1/health/ready HTTP/1.1" 503
+2026-02-28T10:20:25Z INFO: uvicorn.access - 172.17.0.1:42060 - "GET /v1/health/ready HTTP/1.1" 503
+2026-02-28T10:20:28Z INFO: uvicorn.access - 172.17.0.1:42060 - "GET /v1/health/ready HTTP/1.1" 503
+2026-02-28T10:20:31Z INFO: uvicorn.access - 172.17.0.1:42060 - "GET /v1/health/ready HTTP/1.1" 503
+2026-02-28T10:20:34Z INFO: uvicorn.access - 172.17.0.1:42060 - "GET /v1/health/ready HTTP/1.1" 503
+2026-02-28T10:20:37Z INFO: uvicorn.access - 172.17.0.1:42060 - "GET /v1/health/ready HTTP/1.1" 503
+2026-02-28T10:20:40Z INFO: uvicorn.access - 172.17.0.1:42060 - "GET /v1/health/ready HTTP/1.1" 503
+2026-02-28T10:20:43Z INFO: uvicorn.access - 172.17.0.1:42060 - "GET /v1/health/ready HTTP/1.1" 503
+2026-02-28T10:20:46Z INFO: uvicorn.access - 172.17.0.1:42060 - "GET /v1/health/ready HTTP/1.1" 503
+2026-02-28T10:20:49Z INFO: uvicorn.access - 172.17.0.1:42060 - "GET /v1/health/ready HTTP/1.1" 503
+2026-02-28T10:20:52Z INFO: uvicorn.access - 172.17.0.1:42060 - "GET /v1/health/ready HTTP/1.1" 503
+2026-02-28T10:20:55Z INFO: uvicorn.access - 172.17.0.1:42060 - "GET /v1/health/ready HTTP/1.1" 503
+2026-02-28T10:20:58Z INFO: uvicorn.access - 172.17.0.1:42060 - "GET /v1/health/ready HTTP/1.1" 503
+2026-02-28T10:21:01Z INFO: uvicorn.access - 172.17.0.1:42060 - "GET /v1/health/ready HTTP/1.1" 503
+2026-02-28T10:21:04Z INFO: uvicorn.access - 172.17.0.1:42060 - "GET /v1/health/ready HTTP/1.1" 503
+2026-02-28T10:21:07Z INFO: uvicorn.access - 172.17.0.1:42060 - "GET /v1/health/ready HTTP/1.1" 503
+2026-02-28T10:21:10Z INFO: uvicorn.access - 172.17.0.1:42060 - "GET /v1/health/ready HTTP/1.1" 503
+2026-02-28T10:21:13Z INFO: uvicorn.access - 172.17.0.1:42060 - "GET /v1/health/ready HTTP/1.1" 503
+2026-02-28T10:21:16Z INFO: uvicorn.access - 172.17.0.1:42060 - "GET /v1/health/ready HTTP/1.1" 503
+2026-02-28T10:21:19Z INFO: uvicorn.access - 172.17.0.1:42060 - "GET /v1/health/ready HTTP/1.1" 503
+2026-02-28T10:21:22Z INFO: uvicorn.access - 172.17.0.1:42060 - "GET /v1/health/ready HTTP/1.1" 503
+2026-02-28T10:21:25Z INFO: uvicorn.access - 172.17.0.1:42060 - "GET /v1/health/ready HTTP/1.1" 503
+2026-02-28T10:21:28Z INFO: uvicorn.access - 172.17.0.1:42060 - "GET /v1/health/ready HTTP/1.1" 503
+2026-02-28T10:21:31Z INFO: uvicorn.access - 172.17.0.1:42060 - "GET /v1/health/ready HTTP/1.1" 503
+2026-02-28T10:21:34Z INFO: uvicorn.access - 172.17.0.1:42060 - "GET /v1/health/ready HTTP/1.1" 503
+2026-02-28T10:21:37Z INFO: uvicorn.access - 172.17.0.1:42060 - "GET /v1/health/ready HTTP/1.1" 503
+2026-02-28T10:21:40Z INFO: uvicorn.access - 172.17.0.1:42060 - "GET /v1/health/ready HTTP/1.1" 503
+2026-02-28T10:21:43Z INFO: uvicorn.access - 172.17.0.1:42060 - "GET /v1/health/ready HTTP/1.1" 503
+2026-02-28T10:21:46Z INFO: uvicorn.access - 172.17.0.1:42060 - "GET /v1/health/ready HTTP/1.1" 503
+2026-02-28T10:21:49Z INFO: uvicorn.access - 172.17.0.1:42060 - "GET /v1/health/ready HTTP/1.1" 503
+2026-02-28T10:21:52Z INFO: uvicorn.access - 172.17.0.1:42060 - "GET /v1/health/ready HTTP/1.1" 503
+2026-02-28T10:21:55Z INFO: uvicorn.access - 172.17.0.1:42060 - "GET /v1/health/ready HTTP/1.1" 503
+2026-02-28T10:21:58Z INFO: uvicorn.access - 172.17.0.1:42060 - "GET /v1/health/ready HTTP/1.1" 503
+2026-02-28T10:22:01Z INFO: uvicorn.access - 172.17.0.1:42060 - "GET /v1/health/ready HTTP/1.1" 503

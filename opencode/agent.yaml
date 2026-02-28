@@ -2,7 +2,7 @@ default_agent: build
 workspace_root: .
 rules_file: AGENTS.md
 storage_path: data/agent.db
-embedding_enabled: false
+embedding_enabled: true
 embedding_base_url: http://localhost:8001
 embedding_model: nvidia/llama-3.2-nv-embedqa-1b-v2
 embedding_index_path: data/embed-index.jsonl
@@ -12,7 +12,12 @@ embedding_chunk_lines: 260
 embedding_chunk_overlap: 50
 embedding_batch_size: 12
 embedding_max_context_chars: 28000
+embedding_ignore_dirs: [".git", ".run", "node_modules", "dist", "build", "vendor", "bin"]
 embedding_init_timeout: 8m
+rerank_enabled: true
+rerank_base_url: http://localhost:8002
+rerank_model: nvidia/llama-3.2-nv-rerankqa-1b-v2
+rerank_candidate_k: 20
 compaction_turns: 30
 compaction_token_threshold: 12000
 context_turn_window: 10
@@ -36,7 +41,7 @@ agents:
     permissions:
       "*": allow
     temperature: 0.2
-    max_tokens: 150000
+    max_tokens: 16383
 
   plan:
     mode: primary
@@ -48,4 +53,4 @@ agents:
       bash: ask
       "*": allow
     temperature: 0.1
-    max_tokens: 150000
+    max_tokens: 16383

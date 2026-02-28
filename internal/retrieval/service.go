@@ -21,6 +21,10 @@ type Embedder interface {
 	Embed(ctx context.Context, texts []string, inputType string) ([][]float64, error)
 }
 
+type Reranker interface {
+	Rerank(ctx context.Context, query string, docs []string, topN int) ([]int, error)
+}
+
 type Chunk struct {
 	Path      string    `json:"path"`
 	StartLine int       `json:"start_line"`
@@ -35,31 +39,33 @@ type ScoredChunk struct {
 }
 
 type Options struct {
-	Root            string
-	IndexPath       string
-	ChunkLines      int
-	ChunkOverlap    int
-	BatchSize       int
-	TopK            int
-	PerFileLimit    int
-	MaxChunkChars   int
-	MaxContextChars int
-	MaxFileBytes    int64
-	IgnoreDirs      []string
+	Root             string
+	IndexPath        string
+	ChunkLines       int
+	ChunkOverlap     int
+	BatchSize        int
+	TopK             int
+	PerFileLimit     int
+	MaxChunkChars    int
+	MaxContextChars  int
+	MaxFileBytes     int64
+	IgnoreDirs       []string
+	RerankCandidateK int
 }
 
 func DefaultOptions(root string) Options {
 	return Options{
-		Root:            strings.TrimSpace(root),
-		IndexPath:       filepath.Join(strings.TrimSpace(root), "data", "embed-index.jsonl"),
-		ChunkLines:      260,
-		ChunkOverlap:    50,
-		BatchSize:       12,
-		TopK:            12,
-		PerFileLimit:    3,
-		MaxChunkChars:   2400,
-		MaxContextChars: 28000,
-		MaxFileBytes:    2 * 1024 * 1024,
+		Root:             strings.TrimSpace(root),
+		IndexPath:        filepath.Join(strings.TrimSpace(root), "data", "embed-index.jsonl"),
+		ChunkLines:       260,
+		ChunkOverlap:     50,
+		BatchSize:        12,
+		TopK:             12,
+		PerFileLimit:     3,
+		MaxChunkChars:    2400,
+		MaxContextChars:  28000,
+		MaxFileBytes:     2 * 1024 * 1024,
+		RerankCandidateK: 20,
 		IgnoreDirs: []string{
 			".git",
 			".run",
@@ -74,6 +80,7 @@ func DefaultOptions(root string) Options {
 
 type Service struct {
 	embedder Embedder
+	reranker Reranker
 	opts     Options
 
 	mu     sync.RWMutex
@@ -86,6 +93,12 @@ func NewService(embedder Embedder, opts Options) *Service {
 		embedder: embedder,
 		opts:     o,
 	}
+}
+
+func (s *Service) SetReranker(r Reranker) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.reranker = r
 }
 
 func (s *Service) LoadOrBuild(ctx context.Context, force bool) error {
@@ -144,6 +157,7 @@ func (s *Service) Retrieve(ctx context.Context, query string) (string, error) {
 
 	s.mu.RLock()
 	chunks := append([]Chunk(nil), s.chunks...)
+	reranker := s.reranker
 	opts := s.opts
 	s.mu.RUnlock()
 	if len(chunks) == 0 {
@@ -158,7 +172,30 @@ func (s *Service) Retrieve(ctx context.Context, query string) (string, error) {
 		return "", fmt.Errorf("embed query returned empty vector")
 	}
 
-	scored := topKWithDiversity(vecs[0], chunks, opts.TopK, opts.PerFileLimit)
+	candidateK := opts.TopK
+	if opts.RerankCandidateK > candidateK {
+		candidateK = opts.RerankCandidateK
+	}
+	scored := topKWithDiversity(vecs[0], chunks, candidateK, opts.PerFileLimit)
+	if reranker != nil && len(scored) > 1 {
+		docs := make([]string, 0, len(scored))
+		for _, it := range scored {
+			docs = append(docs, fmt.Sprintf("%s:%d-%d\n%s",
+				it.Chunk.Path,
+				it.Chunk.StartLine,
+				it.Chunk.EndLine,
+				strings.TrimSpace(it.Chunk.Text),
+			))
+		}
+		order, rerankErr := reranker.Rerank(ctx, query, docs, opts.TopK)
+		if rerankErr == nil && len(order) > 0 {
+			scored = reorderScoredByIndexes(scored, order, opts.TopK)
+		} else if len(scored) > opts.TopK {
+			scored = scored[:opts.TopK]
+		}
+	} else if len(scored) > opts.TopK {
+		scored = scored[:opts.TopK]
+	}
 	return formatContext(scored, opts.MaxContextChars), nil
 }
 
@@ -166,6 +203,93 @@ func (s *Service) ChunkCount() int {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 	return len(s.chunks)
+}
+
+func (s *Service) OnToolResult(ctx context.Context, toolName string, args json.RawMessage, runErr error) error {
+	if runErr != nil {
+		return nil
+	}
+	toolName = strings.ToLower(strings.TrimSpace(toolName))
+	var paths []string
+	switch toolName {
+	case "edit", "patch":
+		var in struct {
+			Path string `json:"path"`
+		}
+		if err := json.Unmarshal(args, &in); err != nil {
+			return nil
+		}
+		if strings.TrimSpace(in.Path) != "" {
+			paths = append(paths, in.Path)
+		}
+	default:
+		return nil
+	}
+	return s.ReindexPaths(ctx, paths)
+}
+
+func (s *Service) ReindexPaths(ctx context.Context, paths []string) error {
+	if s.embedder == nil {
+		return nil
+	}
+	if len(paths) == 0 {
+		return nil
+	}
+	absRoot, err := filepath.Abs(s.opts.Root)
+	if err != nil {
+		return err
+	}
+	pathSet := map[string]struct{}{}
+	newByPath := map[string][]Chunk{}
+	for _, p := range paths {
+		if err := ctx.Err(); err != nil {
+			return err
+		}
+		rel := normalizeRelPath(p)
+		if rel == "" {
+			continue
+		}
+		if _, ok := pathSet[rel]; ok {
+			continue
+		}
+		pathSet[rel] = struct{}{}
+		ch, buildErr := buildChunksForSinglePath(absRoot, rel, s.opts)
+		if buildErr != nil {
+			return buildErr
+		}
+		if len(ch) > 0 {
+			if err := embedAllChunks(ctx, s.embedder, ch, s.opts.BatchSize); err != nil {
+				return err
+			}
+		}
+		newByPath[rel] = ch
+	}
+	if len(pathSet) == 0 {
+		return nil
+	}
+
+	s.mu.Lock()
+	updated := make([]Chunk, 0, len(s.chunks))
+	for _, ch := range s.chunks {
+		if _, remove := pathSet[ch.Path]; remove {
+			continue
+		}
+		updated = append(updated, ch)
+	}
+	for rel := range pathSet {
+		updated = append(updated, newByPath[rel]...)
+	}
+	sort.Slice(updated, func(i, j int) bool {
+		if updated[i].Path == updated[j].Path {
+			return updated[i].StartLine < updated[j].StartLine
+		}
+		return updated[i].Path < updated[j].Path
+	})
+	s.chunks = updated
+	snapshot := append([]Chunk(nil), s.chunks...)
+	s.mu.Unlock()
+
+	return saveJSONL(s.opts.IndexPath, snapshot)
 }
 
 func normalizeOptions(opts Options) Options {
@@ -202,6 +326,12 @@ func normalizeOptions(opts Options) Options {
 	}
 	if opts.MaxFileBytes <= 0 {
 		opts.MaxFileBytes = def.MaxFileBytes
+	}
+	if opts.RerankCandidateK <= 0 {
+		opts.RerankCandidateK = def.RerankCandidateK
+	}
+	if opts.RerankCandidateK < opts.TopK {
+		opts.RerankCandidateK = opts.TopK
 	}
 	if len(opts.IgnoreDirs) == 0 {
 		opts.IgnoreDirs = def.IgnoreDirs
@@ -243,9 +373,6 @@ func buildChunks(root string, opts Options) ([]Chunk, error) {
 			if _, ok := ignore[name]; ok {
 				return fs.SkipDir
 			}
-			if strings.HasPrefix(name, ".") {
-				return fs.SkipDir
-			}
 			return nil
 		}
 		if !d.Type().IsRegular() {
@@ -285,6 +412,56 @@ func buildChunks(root string, opts Options) ([]Chunk, error) {
 		return nil, err
 	}
 	return out, nil
+}
+
+func buildChunksForSinglePath(absRoot, rel string, opts Options) ([]Chunk, error) {
+	rel = normalizeRelPath(rel)
+	if rel == "" {
+		return nil, nil
+	}
+	if opts.MaxFileBytes <= 0 {
+		opts.MaxFileBytes = 2 * 1024 * 1024
+	}
+	segments := strings.Split(strings.ToLower(rel), "/")
+	ignoredSet := map[string]struct{}{}
+	for _, ignored := range opts.IgnoreDirs {
+		ignored = strings.ToLower(strings.TrimSpace(ignored))
+		if ignored == "" {
+			continue
+		}
+		ignoredSet[ignored] = struct{}{}
+	}
+	for _, seg := range segments[:max(0, len(segments)-1)] {
+		if _, blocked := ignoredSet[seg]; blocked {
+			return nil, nil
+		}
+	}
+	if !isLikelySourceFile(rel) {
+		return nil, nil
+	}
+	absPath := filepath.Join(absRoot, filepath.FromSlash(rel))
+	info, err := os.Stat(absPath)
+	if err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			return nil, nil
+		}
+		return nil, err
+	}
+	if !info.Mode().IsRegular() {
+		return nil, nil
+	}
+	if info.Size() > opts.MaxFileBytes {
+		return nil, nil
+	}
+	raw, err := os.ReadFile(absPath)
+	if err != nil {
+		return nil, err
+	}
+	if len(raw) == 0 || !isLikelyText(raw) {
+		return nil, nil
+	}
+	text := strings.ReplaceAll(string(raw), "\r\n", "\n")
+	return chunkText(rel, text, opts.ChunkLines, opts.ChunkOverlap, opts.MaxChunkChars), nil
 }
 
 func chunkText(path, text string, chunkLines, overlap, maxChars int) []Chunk {
@@ -339,9 +516,9 @@ func embedAllChunks(ctx context.Context, embedder Embedder, chunks []Chunk, batc
 		for j := i; j < end; j++ {
 			texts = append(texts, chunks[j].Text)
 		}
-		vecs, err := embedder.Embed(ctx, texts, "document")
+		vecs, err := embedder.Embed(ctx, texts, "passage")
 		if err != nil {
-			return fmt.Errorf("embed document chunks [%d:%d]: %w", i, end, err)
+			return fmt.Errorf("embed passage chunks [%d:%d]: %w", i, end, err)
 		}
 		if len(vecs) != len(texts) {
 			return fmt.Errorf("embed size mismatch for batch [%d:%d], want=%d got=%d", i, end, len(texts), len(vecs))
@@ -456,6 +633,40 @@ func topKWithDiversity(queryVec []float64, chunks []Chunk, k int, perFile int) [
 	return out
 }
 
+func reorderScoredByIndexes(candidates []ScoredChunk, order []int, k int) []ScoredChunk {
+	if len(candidates) == 0 {
+		return nil
+	}
+	if k <= 0 || k > len(candidates) {
+		k = len(candidates)
+	}
+	out := make([]ScoredChunk, 0, k)
+	used := make(map[int]struct{}, k)
+	for _, idx := range order {
+		if idx < 0 || idx >= len(candidates) {
+			continue
+		}
+		if _, ok := used[idx]; ok {
+			continue
+		}
+		used[idx] = struct{}{}
+		out = append(out, candidates[idx])
+		if len(out) >= k {
+			return out
+		}
+	}
+	for i := range candidates {
+		if _, ok := used[i]; ok {
+			continue
+		}
+		out = append(out, candidates[i])
+		if len(out) >= k {
+			break
+		}
+	}
+	return out
+}
+
 func formatContext(items []ScoredChunk, maxChars int) string {
 	if len(items) == 0 {
 		return ""
@@ -558,4 +769,14 @@ func clipRunes(s string, max int) string {
 		return s
 	}
 	return string(r[:max])
+}
+
+func normalizeRelPath(p string) string {
+	p = filepath.ToSlash(strings.TrimSpace(p))
+	p = strings.TrimPrefix(p, "./")
+	p = strings.TrimPrefix(p, "/")
+	if p == "." {
+		return ""
+	}
+	return p
 }

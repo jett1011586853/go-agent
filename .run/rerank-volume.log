@@ -1,0 +1,51 @@
+﻿
+===================================
+== NVIDIA NIM for Text Reranking ==
+===================================
+
+NVIDIA Release 1.8.0
+Model: nvidia/llama-3.2-nv-rerankqa-1b-v2
+
+Container image Copyright (c) 2016-2025, NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+The NIM container is governed by the NVIDIA Software License Agreement (found at https://www.nvidia.com/en-us/agreements/enterprise-software/nvidia-software-license-agreement/) and the Product-Specific Terms for NVIDIA AI Products (found at https://www.nvidia.com/en-us/agreements/enterprise-software/product-specific-terms-for-ai-products/).
+
+Use of this model is governed by the NVIDIA Community Model License Agreement (found at https://www.nvidia.com/en-us/agreements/enterprise-software/nvidia-community-models-license/).
+
+ADDITIONAL INFORMATION: Llama 3.2 Community License Agreement (https://www.llama.com/llama3_2/license/). Built with Llama.
+
+A copy of this license can be found under /opt/nim/LICENSE.
+Third Party Software Attributions and Licenses can be found under /opt/nim/acknowledgements.txt.
+
+Overriding NIM_LOG_LEVEL: replacing NIM_LOG_LEVEL=unset with NIM_LOG_LEVEL=INFO
+HF_HOME is set to /opt/nim/.cache/huggingface
+INFO 2026-02-28 09:34:46.876 __init__.py:413] Appending: /opt/nim to PYTHONPATH: ['/opt/nim/start_server.d', '/usr/lib/python312.zip', '/usr/lib/python3.12', '/usr/lib/python3.12/lib-dynload', '/usr/local/lib/python3.12/dist-packages', '/usr/lib/python3/dist-packages']
+NIM_MODEL_PROFILE is set to bbf794644e63fe68abeffb0dae1c4f734122ace0350f827c8935cc75e80df265
+INFO 2026-02-28 09:34:47.548 __init__.py:413] Appending: /opt/nim to PYTHONPATH: ['/opt/nim/start_server.d', '/usr/lib/python312.zip', '/usr/lib/python3.12', '/usr/lib/python3.12/lib-dynload', '/usr/local/lib/python3.12/dist-packages', '/usr/lib/python3/dist-packages']
+INFO 2026-02-28 09:34:49.482 profiles.py:98] Registered custom profile selectors: []
+INFO 2026-02-28 09:34:49.483 profiles.py:208] Matched profile_id in manifest from env NIM_MODEL_PROFILE to: bbf794644e63fe68abeffb0dae1c4f734122ace0350f827c8935cc75e80df265
+INFO 2026-02-28 09:34:49.483 nim_sdk.py:299] Using the profile selected by the profile selector: bbf794644e63fe68abeffb0dae1c4f734122ace0350f827c8935cc75e80df265
+INFO 2026-02-28 09:34:49.483 nim_sdk.py:308] Downloading manifest profile: bbf794644e63fe68abeffb0dae1c4f734122ace0350f827c8935cc75e80df265
+docker : INFO 2026-02-28 09:34:49.521 tokio.rs:919] "nim/nvidia/llama-3.2-nv-rerankqa-1b-v2:l40sx1-trt-fp8-lwpgyxqy1w":
+ fetching filemap from: https://api.ngc.nvidia.com/v2/org/nim/team/nvidia/models/llama-3.2-nv-rerankqa-1b-v2/l40sx1-trt
+-fp8-lwpgyxqy1w/files
+At line:2 char:1
++ docker logs rerank-nim 2>&1 | Out-File -Encoding utf8 d:\go-agent\.ru ...
++ ~~~~~~~~~~~~~~~~~~~~~~~~~~~
+    + CategoryInfo          : NotSpecified: (INFO 2026-02-28...wpgyxqy1w/files:String) [], RemoteException
+    + FullyQualifiedErrorId : NativeCommandError
+ 
+INFO 2026-02-28 09:34:53.394 tokio.rs:919] "nim/nvidia/llama-3.2-nv-rerankqa-1b-v2:tokenizer-8192-3fe66485": fetching f
+ilemap from: https://api.ngc.nvidia.com/v2/org/nim/team/nvidia/models/llama-3.2-nv-rerankqa-1b-v2/tokenizer-8192-3fe664
+85/files
+INFO 2026-02-28 09:35:00.258 tokio.rs:814] Downloaded filename: memory_footprint.json to blob: "/opt/nim/.cache/ngc/hub
+/models--nim--nvidia--llama-3.2-nv-rerankqa-1b-v2/blobs/8abcf6c7accf42052df5195d68703ce3"
+INFO 2026-02-28 09:35:00.310 tokio.rs:814] Downloaded filename: special_tokens_map.json to blob: "/opt/nim/.cache/ngc/h
+ub/models--nim--nvidia--llama-3.2-nv-rerankqa-1b-v2/blobs/fc95fcb511658ee23b32c998124f66fd"
+INFO 2026-02-28 09:35:00.350 tokio.rs:814] Downloaded filename: checksums.blake3 to blob: "/opt/nim/.cache/ngc/hub/mode
+ls--nim--nvidia--llama-3.2-nv-rerankqa-1b-v2/blobs/78fb3e27b2851aa94d0efb053e2b89e3"
+INFO 2026-02-28 09:35:01.196 tokio.rs:814] Downloaded filename: metadata.json to blob: "/opt/nim/.cache/ngc/hub/models-
+-nim--nvidia--llama-3.2-nv-rerankqa-1b-v2/blobs/2ff01a96b33cb8719d085a0884b926e7"
+INFO 2026-02-28 09:35:01.807 tokio.rs:814] Downloaded filename: tokenizer_config.json to blob: "/opt/nim/.cache/ngc/hub
+/models--nim--nvidia--llama-3.2-nv-rerankqa-1b-v2/blobs/c875c358a9f816b3bb56d41a635f762b"
+INFO 2026-02-28 09:35:16.812 tokio.rs:814] Downloaded filename: tokenizer.json to blob: "/opt/nim/.cache/ngc/hub/models
+--nim--nvidia--llama-3.2-nv-rerankqa-1b-v2/blobs/b476ea5991c25028802c06d4574201f5"

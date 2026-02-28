@@ -9,6 +9,7 @@ import (
 	"net/http"
 	"os"
 	"strings"
+	"sync"
 	"time"
 
 	"go-agent/internal/agent"
@@ -16,8 +17,10 @@ import (
 	"go-agent/internal/config"
 	ctxbuild "go-agent/internal/context"
 	"go-agent/internal/embednim"
+	"go-agent/internal/indexer"
 	"go-agent/internal/llm"
 	"go-agent/internal/permission"
+	"go-agent/internal/reranknim"
 	"go-agent/internal/retrieval"
 	"go-agent/internal/server"
 	"go-agent/internal/session"
@@ -81,18 +84,47 @@ func main() {
 	contextBuilder := ctxbuild.NewBuilder(cfg.RulesFile, cfg.WorkspaceRoot, cfg.ContextTurnWindow)
 
 	application := app.New(cfg, agents, sessionMgr, contextBuilder, permEngine, registry, llmProvider)
+	indexCtx, cancelIndexer := context.WithCancel(context.Background())
+	defer cancelIndexer()
 	if cfg.EmbeddingEnabled {
+		log.Printf(
+			"embedding retrieval enabled: base=%s model=%s index=%s topk=%d per_file=%d chunk_lines=%d overlap=%d",
+			cfg.EmbeddingBaseURL,
+			cfg.EmbeddingModel,
+			cfg.EmbeddingIndex,
+			cfg.EmbeddingTopK,
+			cfg.EmbeddingPerFile,
+			cfg.EmbeddingChunk,
+			cfg.EmbeddingOverlap,
+		)
 		embedClient := embednim.New(cfg.EmbeddingBaseURL, cfg.EmbeddingModel, cfg.RequestTimeout)
 		retriever := retrieval.NewService(embedClient, retrieval.Options{
-			Root:            cfg.WorkspaceRoot,
-			IndexPath:       cfg.EmbeddingIndex,
-			ChunkLines:      cfg.EmbeddingChunk,
-			ChunkOverlap:    cfg.EmbeddingOverlap,
-			BatchSize:       cfg.EmbeddingBatch,
-			TopK:            cfg.EmbeddingTopK,
-			PerFileLimit:    cfg.EmbeddingPerFile,
-			MaxContextChars: cfg.EmbeddingMaxCtx,
+			Root:             cfg.WorkspaceRoot,
+			IndexPath:        cfg.EmbeddingIndex,
+			ChunkLines:       cfg.EmbeddingChunk,
+			ChunkOverlap:     cfg.EmbeddingOverlap,
+			BatchSize:        cfg.EmbeddingBatch,
+			TopK:             cfg.EmbeddingTopK,
+			PerFileLimit:     cfg.EmbeddingPerFile,
+			MaxContextChars:  cfg.EmbeddingMaxCtx,
+			IgnoreDirs:       cfg.EmbeddingIgnore,
+			RerankCandidateK: cfg.RerankCandidateK,
 		})
+		if cfg.RerankEnabled {
+			rerankTimeout := cfg.RequestTimeout
+			if rerankTimeout <= 0 || rerankTimeout > 20*time.Second {
+				rerankTimeout = 20 * time.Second
+			}
+			retriever.SetReranker(reranknim.New(cfg.RerankBaseURL, cfg.RerankModel, rerankTimeout))
+			log.Printf(
+				"retrieval rerank enabled: base=%s model=%s candidate_k=%d",
+				cfg.RerankBaseURL,
+				cfg.RerankModel,
+				cfg.RerankCandidateK,
+			)
+		} else {
+			log.Printf("retrieval rerank disabled: rerank_enabled=false")
+		}
 		initCtx, cancel := withOptionalTimeout(context.Background(), cfg.EmbeddingInitTime)
 		err := retriever.LoadOrBuild(initCtx, false)
 		cancel()
@@ -107,7 +139,31 @@ func main() {
 				cfg.EmbeddingBaseURL,
 				cfg.EmbeddingModel,
 			)
+			idxService := indexer.NewService(cfg.WorkspaceRoot, retriever, indexer.Options{})
+			idxService.Start(indexCtx, func(err error) {
+				log.Printf("warning: indexer update failed: %v", err)
+			})
+			if err := registry.RegisterHook(indexer.NewToolHook(idxService)); err != nil {
+				log.Printf("warning: failed to register index hook: %v", err)
+			}
+			go func() {
+				if err := indexer.StartWorkspaceWatcher(
+					indexCtx,
+					cfg.WorkspaceRoot,
+					cfg.EmbeddingIgnore,
+					idxService.Enqueue,
+					func(err error) {
+						log.Printf("warning: index watcher error: %v", err)
+					},
+				); err != nil {
+					log.Printf("warning: index watcher disabled: %v", err)
+				} else {
+					log.Printf("embedding index watcher started on %s", cfg.WorkspaceRoot)
+				}
+			}()
 		}
+	} else {
+		log.Printf("embedding retrieval disabled: embedding_enabled=false")
 	}
 
 	if cfg.EnableHTTP {
@@ -132,15 +188,23 @@ func main() {
 func runOneShot(a *app.App, cfg config.Config, sessionID, agentName, task string) {
 	ctx, cancel := withOptionalTimeout(context.Background(), cfg.OneShotTimeout)
 	defer cancel()
+	events := newCLIEventPrinter()
+	ctx = app.WithEventHandler(ctx, events.Handle)
+	stream := newCLIStreamPrinter()
+	ctx = llm.WithStreamHandler(ctx, stream.Handle)
 	resp, err := a.HandleTurn(ctx, app.TurnRequest{
 		SessionID: sessionID,
 		Agent:     agentName,
 		Input:     task,
 	}, cliApprover{})
+	rest := stream.FinishAndRemainder(resp.Output)
 	if err != nil {
 		log.Fatal(err)
 	}
-	fmt.Printf("session=%s agent=%s\n\n%s\n", resp.SessionID, resp.Agent, resp.Output)
+	fmt.Printf("session=%s agent=%s\n\n", resp.SessionID, resp.Agent)
+	if strings.TrimSpace(rest) != "" {
+		fmt.Printf("%s\n", rest)
+	}
 }
 
 func runREPL(a *app.App, cfg config.Config, initSessionID, initAgent string) {
@@ -219,6 +283,10 @@ func runREPL(a *app.App, cfg config.Config, initSessionID, initAgent string) {
 		}
 
 		ctx, cancel := withOptionalTimeout(context.Background(), cfg.TurnTimeout)
+		events := newCLIEventPrinter()
+		ctx = app.WithEventHandler(ctx, events.Handle)
+		stream := newCLIStreamPrinter()
+		ctx = llm.WithStreamHandler(ctx, stream.Handle)
 		start := time.Now()
 		resp, err := a.HandleTurn(ctx, app.TurnRequest{
 			SessionID: currentSession,
@@ -226,13 +294,95 @@ func runREPL(a *app.App, cfg config.Config, initSessionID, initAgent string) {
 			Input:     line,
 		}, cliApprover{})
 		cancel()
+		rest := stream.FinishAndRemainder(resp.Output)
 		if err != nil {
 			fmt.Printf("error: %v\n", err)
 			continue
 		}
 		currentSession = resp.SessionID
-		fmt.Printf("\n%s\n", resp.Output)
+		if strings.TrimSpace(rest) != "" {
+			fmt.Printf("\n%s\n", rest)
+		}
 		fmt.Printf("(done in %s)\n", time.Since(start).Round(time.Millisecond))
+	}
+}
+
+type cliStreamPrinter struct {
+	mu       sync.Mutex
+	started  bool
+	rendered strings.Builder
+}
+
+func newCLIStreamPrinter() *cliStreamPrinter {
+	return &cliStreamPrinter{}
+}
+
+func (p *cliStreamPrinter) Handle(delta llm.StreamDelta) {
+	text := delta.Content
+	if strings.TrimSpace(text) == "" {
+		return
+	}
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	if !p.started {
+		fmt.Print("\n[writer]\n")
+		p.started = true
+	}
+	fmt.Print(text)
+	p.rendered.WriteString(text)
+}
+
+func (p *cliStreamPrinter) FinishAndRemainder(full string) string {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	if p.started {
+		fmt.Println()
+		p.started = false
+	}
+	rendered := p.rendered.String()
+	p.rendered.Reset()
+	if rendered == "" {
+		return full
+	}
+	if strings.HasPrefix(full, rendered) {
+		return strings.TrimPrefix(full, rendered)
+	}
+	if full == rendered {
+		return ""
+	}
+	// Fallback: return full when we cannot confidently align prefix.
+	return full
+}
+
+type cliEventPrinter struct {
+	mu sync.Mutex
+}
+
+func newCLIEventPrinter() *cliEventPrinter {
+	return &cliEventPrinter{}
+}
+
+func (p *cliEventPrinter) Handle(ev app.Event) {
+	if p == nil {
+		return
+	}
+	text := strings.TrimSpace(ev.Text)
+	if text == "" {
+		return
+	}
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	switch strings.ToLower(strings.TrimSpace(ev.Type)) {
+	case "planner":
+		fmt.Printf("\n[planner] %s\n", text)
+	case "writer":
+		fmt.Printf("\n[writer] %s\n", text)
+	case "retrieval":
+		fmt.Printf("\n[retrieval]\n%s\n", text)
+	case "tool":
+		fmt.Printf("\n[tool]\n%s\n", text)
+	default:
+		fmt.Printf("\n[meta] %s\n", text)
 	}
 }
 

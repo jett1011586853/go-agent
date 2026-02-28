@@ -60,7 +60,12 @@ func (c *Client) Embed(ctx context.Context, texts []string, inputType string) ([
 	}
 	inputType = strings.TrimSpace(strings.ToLower(inputType))
 	if inputType == "" {
-		inputType = "document"
+		inputType = "passage"
+	}
+	// NIM embedding expects input_type in {"query","passage"}.
+	// Keep backward compatibility with internal callers that still pass "document".
+	if inputType == "document" {
+		inputType = "passage"
 	}
 
 	reqBody, err := json.Marshal(embedReq{

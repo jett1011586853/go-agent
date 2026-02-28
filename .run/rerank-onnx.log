@@ -1,0 +1,48 @@
+﻿
+===================================
+== NVIDIA NIM for Text Reranking ==
+===================================
+
+NVIDIA Release 1.8.0
+Model: nvidia/llama-3.2-nv-rerankqa-1b-v2
+
+Container image Copyright (c) 2016-2025, NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+The NIM container is governed by the NVIDIA Software License Agreement (found at https://www.nvidia.com/en-us/agreements/enterprise-software/nvidia-software-license-agreement/) and the Product-Specific Terms for NVIDIA AI Products (found at https://www.nvidia.com/en-us/agreements/enterprise-software/product-specific-terms-for-ai-products/).
+
+Use of this model is governed by the NVIDIA Community Model License Agreement (found at https://www.nvidia.com/en-us/agreements/enterprise-software/nvidia-community-models-license/).
+
+ADDITIONAL INFORMATION: Llama 3.2 Community License Agreement (https://www.llama.com/llama3_2/license/). Built with Llama.
+
+A copy of this license can be found under /opt/nim/LICENSE.
+Third Party Software Attributions and Licenses can be found under /opt/nim/acknowledgements.txt.
+
+Overriding NIM_LOG_LEVEL: replacing NIM_LOG_LEVEL=unset with NIM_LOG_LEVEL=INFO
+HF_HOME is set to /opt/nim/.cache/huggingface
+docker : INFO 2026-02-28 10:01:07.225 profiles.py:208] Matched profile_id in manifest from env NIM_MODEL_PROFILE to: f7
+391ddbcb95b2406853526b8e489fedf20083a2420563ca3e65358ff417b10f
+At line:2 char:1
++ docker logs rerank-nim 2>&1 | Out-File -Encoding utf8 d:\go-agent\.ru ...
++ ~~~~~~~~~~~~~~~~~~~~~~~~~~~
+    + CategoryInfo          : NotSpecified: (INFO 2026-02-28...e65358ff417b10f:String) [], RemoteException
+    + FullyQualifiedErrorId : NativeCommandError
+ 
+INFO 2026-02-28 10:01:06.734 __init__.py:413] Appending: /opt/nim to PYTHONPATH: ['/opt/nim/start_server.d', '/usr/lib/python312.zip', '/usr/lib/python3.12', '/usr/lib/python3.12/lib-dynload', '/usr/local/lib/python3.12/dist-packages', '/usr/lib/python3/dist-packages']
+INFO 2026-02-28 10:01:07.225 profiles.py:208] Matched profile_id in manifest from env NIM_MODEL_PROFILE to: f7391ddbcb95b2406853526b8e489fedf20083a2420563ca3e65358ff417b10f
+NIM_MODEL_PROFILE is set to f7391ddbcb95b2406853526b8e489fedf20083a2420563ca3e65358ff417b10f
+INFO 2026-02-28 10:01:07.432 __init__.py:413] Appending: /opt/nim to PYTHONPATH: ['/opt/nim/start_server.d', '/usr/lib/python312.zip', '/usr/lib/python3.12', '/usr/lib/python3.12/lib-dynload', '/usr/local/lib/python3.12/dist-packages', '/usr/lib/python3/dist-packages']
+INFO 2026-02-28 10:01:09.838 profiles.py:98] Registered custom profile selectors: []
+INFO 2026-02-28 10:01:09.838 profiles.py:208] Matched profile_id in manifest from env NIM_MODEL_PROFILE to: f7391ddbcb95b2406853526b8e489fedf20083a2420563ca3e65358ff417b10f
+INFO 2026-02-28 10:01:09.838 nim_sdk.py:299] Using the profile selected by the profile selector: f7391ddbcb95b2406853526b8e489fedf20083a2420563ca3e65358ff417b10f
+INFO 2026-02-28 10:01:09.839 nim_sdk.py:308] Downloading manifest profile: f7391ddbcb95b2406853526b8e489fedf20083a2420563ca3e65358ff417b10f
+INFO 2026-02-28 10:01:09.880 tokio.rs:919] "nim/nvidia/llama-3.2-nv-rerankqa-1b-v2:onnx-precision.fp16-d03bf375": fetch
+ing filemap from: https://api.ngc.nvidia.com/v2/org/nim/team/nvidia/models/llama-3.2-nv-rerankqa-1b-v2/onnx-precision.f
+p16-d03bf375/files
+INFO 2026-02-28 10:01:14.538 tokio.rs:919] "nim/nvidia/llama-3.2-nv-rerankqa-1b-v2:tokenizer-4096-f250c002": fetching f
+ilemap from: https://api.ngc.nvidia.com/v2/org/nim/team/nvidia/models/llama-3.2-nv-rerankqa-1b-v2/tokenizer-4096-f250c0
+02/files
+INFO 2026-02-28 10:01:20.069 tokio.rs:814] Downloaded filename: tokenizer_config.json to blob: "/opt/nim/.cache/ngc/hub
+/models--nim--nvidia--llama-3.2-nv-rerankqa-1b-v2/blobs/367af7c2b2b4446511788ef45dbda3ef"
+INFO 2026-02-28 10:01:20.338 tokio.rs:814] Downloaded filename: special_tokens_map.json to blob: "/opt/nim/.cache/ngc/h
+ub/models--nim--nvidia--llama-3.2-nv-rerankqa-1b-v2/blobs/3f131b46f5c8a2fac345cb98112d9058"
+INFO 2026-02-28 10:01:24.338 tokio.rs:814] Downloaded filename: tokenizer.json to blob: "/opt/nim/.cache/ngc/hub/models
+--nim--nvidia--llama-3.2-nv-rerankqa-1b-v2/blobs/f768597b601f4362b841bb19ea8f077a"

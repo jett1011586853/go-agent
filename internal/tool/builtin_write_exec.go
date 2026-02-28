@@ -7,6 +7,8 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"regexp"
+	"slices"
 	"strings"
 	"time"
 )
@@ -136,9 +138,78 @@ func (t *bashTool) Run(ctx context.Context, args json.RawMessage) (Result, error
 	cmd := exec.CommandContext(runCtx, "powershell", "-NoProfile", "-Command", in.Cmd)
 	cmd.Dir = cwd
 	out, err := cmd.CombinedOutput()
-	text := t.trimOutput(string(out))
+	text := summarizeCommandOutput(in.Cmd, string(out))
+	text = t.trimOutput(text)
 	if err != nil {
 		return Result{Output: text}, fmt.Errorf("bash failed: %w", err)
 	}
 	return Result{Output: text}, nil
+}
+
+func summarizeCommandOutput(cmd, output string) string {
+	cmdLower := strings.ToLower(cmd)
+	interestingCmd := strings.Contains(cmdLower, "go test") ||
+		strings.Contains(cmdLower, "go build") ||
+		strings.Contains(cmdLower, "go vet") ||
+		strings.Contains(cmdLower, "pytest") ||
+		strings.Contains(cmdLower, "npm test") ||
+		strings.Contains(cmdLower, "pnpm test") ||
+		strings.Contains(cmdLower, "yarn test")
+	if !interestingCmd {
+		return output
+	}
+	lines := strings.Split(strings.ReplaceAll(output, "\r\n", "\n"), "\n")
+	if len(lines) <= 160 {
+		return output
+	}
+
+	pattern := regexp.MustCompile(`(?i)(^FAIL\b|\bfail(ed|ure)?\b|panic:|fatal:|error:|undefined:|exception|traceback)`)
+	keep := map[int]struct{}{}
+	keepWindow := func(center int, radius int) {
+		start := center - radius
+		if start < 0 {
+			start = 0
+		}
+		end := center + radius
+		if end >= len(lines) {
+			end = len(lines) - 1
+		}
+		for i := start; i <= end; i++ {
+			keep[i] = struct{}{}
+		}
+	}
+	for i, line := range lines {
+		if pattern.MatchString(line) {
+			keepWindow(i, 2)
+		}
+	}
+	for i := 0; i < len(lines) && i < 20; i++ {
+		keep[i] = struct{}{}
+	}
+	for i := len(lines) - 20; i < len(lines); i++ {
+		if i >= 0 {
+			keep[i] = struct{}{}
+		}
+	}
+	if len(keep) == len(lines) {
+		return output
+	}
+
+	ids := make([]int, 0, len(keep))
+	for i := range keep {
+		ids = append(ids, i)
+	}
+	slices.Sort(ids)
+	var b strings.Builder
+	fmt.Fprintf(&b, "[summarized output] kept %d/%d lines\n", len(ids), len(lines))
+	last := -1
+	for _, i := range ids {
+		if last >= 0 && i-last > 1 {
+			b.WriteString("...\n")
+		}
+		b.WriteString(lines[i])
+		b.WriteString("\n")
+		last = i
+	}
+	return strings.TrimSpace(b.String())
 }

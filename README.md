@@ -12,12 +12,19 @@ The previous gateway/orchestrator/RAG/OCR stack was removed.
 - CLI-first coding agent
 - Two primary agents: `build`, `plan`
 - Turn loop: `LLM -> tool -> LLM ...` until final answer or request timeout
+- CLI live stream output from provider SSE chunks (`[llm-stream] ...`) during each turn
+- CLI event feed for retrieval/tool/meta stages (`[retrieval]`, `[tool]`, `[meta]`)
+- Auto continuation on truncated model output (`finish_reason=length` or missing `*** END PATCH`)
+- Adaptive `max_tokens` budgeting based on agent type and prompt size
+- Two-stage LLM loop: non-stream planner action first, stream writer only for long final output
 - Permission engine: `allow / ask / deny` with wildcard and exact-match priority
 - Tool registry: `list`, `glob`, `grep`, `read`, `edit`, `patch`, `bash`, `webfetch`, `websearch`
 - Session persistence (BoltDB): session + turns + audit + approvals
 - Compaction trigger: turn-count or token-estimate based rolling summary + pinned facts
 - Workspace signals in context: root/top entries/git branch hint
 - Optional local embedding retrieval (NIM on `localhost:8001`) for TopK code context injection
+- Optional local rerank stage (NIM on `localhost:8002`) to reorder retrieval candidates (`Top20 -> TopK`)
+- Incremental embedding index updates via tool hook + filesystem watcher (debounced queue)
 - Optional HTTP server:
   - `POST /sessions`
   - `POST /sessions/{id}/turns`
@@ -60,15 +67,30 @@ Optional reliability knobs in `.env`:
 - `CLEAR_THINKING=false`
 - `TURN_TIMEOUT=90m`
 - `ONESHOT_TIMEOUT=60m`
-- `EMBEDDING_ENABLED=true`
+- `EMBEDDING_ENABLED=true` (default in `opencode/agent.yaml`)
 - `EMBEDDING_BASE_URL=http://localhost:8001`
 - `EMBEDDING_MODEL=nvidia/llama-3.2-nv-embedqa-1b-v2`
+- `EMBEDDING_IGNORE_DIRS=.git,.run,node_modules,dist,build,vendor,bin`
+- `RERANK_ENABLED=true`
+- `RERANK_BASE_URL=http://localhost:8002`
+- `RERANK_MODEL=nvidia/llama-3.2-nv-rerankqa-1b-v2`
+- `RERANK_CANDIDATE_K=20`
 
 2) Start CLI
 
 ```powershell
 powershell -ExecutionPolicy Bypass -File .\start-agent.ps1
 ```
+
+`start.ps1` will auto-start local NIM containers in detached mode when enabled:
+
+- embedding (`embed-nim`, `localhost:8001`)
+- rerank (`rerank-nim`, `localhost:8002`)
+
+You can override images/container/cache/port via env vars:
+
+- `EMBED_NIM_IMAGE`, `EMBED_NIM_CONTAINER`, `EMBED_NIM_CACHE`, `EMBED_NIM_PORT`
+- `RERANK_NIM_IMAGE`, `RERANK_NIM_CONTAINER`, `RERANK_NIM_CACHE`, `RERANK_NIM_PORT`
 
 3) Start HTTP mode (optional)
 

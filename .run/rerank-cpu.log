@@ -1,0 +1,23 @@
+﻿
+===================================
+== NVIDIA NIM for Text Reranking ==
+===================================
+
+NVIDIA Release 1.8.0
+Model: nvidia/llama-3.2-nv-rerankqa-1b-v2
+
+Container image Copyright (c) 2016-2025, NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+The NIM container is governed by the NVIDIA Software License Agreement (found at https://www.nvidia.com/en-us/agreements/enterprise-software/nvidia-software-license-agreement/) and the Product-Specific Terms for NVIDIA AI Products (found at https://www.nvidia.com/en-us/agreements/enterprise-software/product-specific-terms-for-ai-products/).
+
+Use of this model is governed by the NVIDIA Community Model License Agreement (found at https://www.nvidia.com/en-us/agreements/enterprise-software/nvidia-community-models-license/).
+
+ADDITIONAL INFORMATION: Llama 3.2 Community License Agreement (https://www.llama.com/llama3_2/license/). Built with Llama.
+
+A copy of this license can be found under /opt/nim/LICENSE.
+Third Party Software Attributions and Licenses can be found under /opt/nim/acknowledgements.txt.
+
+WARNING: The NVIDIA Driver was not detected.  GPU functionality will not be available.
+   Use the NVIDIA Container Toolkit to start this container with GPU support; see
+   https://docs.nvidia.com/datacenter/cloud-native/ .
+
+libnvidia-ml.so.1 not found under /usr.

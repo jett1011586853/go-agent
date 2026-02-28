@@ -3,6 +3,7 @@ package app
 import (
 	"context"
 	"errors"
+	"io"
 	"os"
 	"path/filepath"
 	"strings"
@@ -33,6 +34,10 @@ func (s *stubProvider) Chat(context.Context, llm.ChatRequest) (llm.ChatResponse,
 	return llm.ChatResponse{Content: out}, nil
 }
 
+func (*stubProvider) ChatStream(context.Context, llm.ChatRequest) (llm.Stream, error) {
+	return nil, io.EOF
+}
+
 type rateLimitThenSuccessProvider struct {
 	calls int
 }
@@ -54,16 +59,28 @@ func (p *rateLimitThenSuccessProvider) Chat(_ context.Context, req llm.ChatReque
 	return llm.ChatResponse{Content: `{"type":"final","content":"ok-after-fallback"}`}, nil
 }
 
+func (*rateLimitThenSuccessProvider) ChatStream(context.Context, llm.ChatRequest) (llm.Stream, error) {
+	return nil, io.EOF
+}
+
 type alwaysInvalidProvider struct{}
 
 func (alwaysInvalidProvider) Chat(context.Context, llm.ChatRequest) (llm.ChatResponse, error) {
 	return llm.ChatResponse{Content: "not a json object"}, nil
 }
 
+func (alwaysInvalidProvider) ChatStream(context.Context, llm.ChatRequest) (llm.Stream, error) {
+	return nil, io.EOF
+}
+
 type repeatToolProvider struct{}
 
 func (repeatToolProvider) Chat(context.Context, llm.ChatRequest) (llm.ChatResponse, error) {
 	return llm.ChatResponse{Content: `{"type":"tool_call","tool":{"name":"read","args":{"path":"a.txt"}}}`}, nil
+}
+
+func (repeatToolProvider) ChatStream(context.Context, llm.ChatRequest) (llm.Stream, error) {
+	return nil, io.EOF
 }
 
 type contextAwareProvider struct {
@@ -84,12 +101,78 @@ func (p *contextAwareProvider) Chat(_ context.Context, req llm.ChatRequest) (llm
 	return llm.ChatResponse{Content: `{"type":"final","content":"ok-with-retrieval"}`}, nil
 }
 
+func (*contextAwareProvider) ChatStream(context.Context, llm.ChatRequest) (llm.Stream, error) {
+	return nil, io.EOF
+}
+
 type fixedRetriever struct {
 	value string
 }
 
 func (r fixedRetriever) Retrieve(context.Context, string) (string, error) {
 	return r.value, nil
+}
+
+type continuationProvider struct {
+	calls int
+}
+
+func (p *continuationProvider) Chat(_ context.Context, req llm.ChatRequest) (llm.ChatResponse, error) {
+	p.calls++
+	if p.calls == 1 {
+		return llm.ChatResponse{
+			Content: `{"type":"final","content":"__NEED_WRITER__","next_steps":["continue final output"]}`,
+		}, nil
+	}
+	if p.calls == 2 {
+		return llm.ChatResponse{
+			Content:      "continued",
+			FinishReason: "length",
+		}, nil
+	}
+	last := req.Messages[len(req.Messages)-1]
+	if last.Role != "user" || !strings.Contains(strings.ToLower(last.Content), "cut off") {
+		return llm.ChatResponse{}, errors.New("missing continuation prompt")
+	}
+	return llm.ChatResponse{
+		Content:      "-ok",
+		FinishReason: "stop",
+	}, nil
+}
+
+func (*continuationProvider) ChatStream(context.Context, llm.ChatRequest) (llm.Stream, error) {
+	return nil, io.EOF
+}
+
+type plannerWriterProvider struct {
+	calls      int
+	streams    []bool
+	maxTokens  []int
+	lastPrompt []llm.ChatMessage
+}
+
+func (p *plannerWriterProvider) Chat(_ context.Context, req llm.ChatRequest) (llm.ChatResponse, error) {
+	p.calls++
+	p.maxTokens = append(p.maxTokens, req.MaxTokens)
+	stream := false
+	if req.Stream != nil {
+		stream = *req.Stream
+	}
+	p.streams = append(p.streams, stream)
+	p.lastPrompt = append([]llm.ChatMessage(nil), req.Messages...)
+	if p.calls == 1 {
+		return llm.ChatResponse{
+			Content: `{"type":"final","content":"__NEED_WRITER__","next_steps":["summarize findings","provide concrete next steps"]}`,
+		}, nil
+	}
+	return llm.ChatResponse{
+		Content:      "detailed final output",
+		FinishReason: "stop",
+	}, nil
+}
+
+func (*plannerWriterProvider) ChatStream(context.Context, llm.ChatRequest) (llm.Stream, error) {
+	return nil, io.EOF
 }
 
 type fixedApprover bool
@@ -291,6 +374,110 @@ func TestHandleTurnInjectsRetrievedContext(t *testing.T) {
 	}
 	if !p.foundRetrievedContext {
 		t.Fatalf("expected retrieved context to be injected into system messages")
+	}
+}
+
+func TestHandleTurnAutoContinuationOnLength(t *testing.T) {
+	p := &continuationProvider{}
+	a, _ := setupTestApp(t, p)
+	resp, err := a.HandleTurn(context.Background(), TurnRequest{
+		Input: "return a final answer",
+		Agent: "build",
+	}, fixedApprover(true))
+	if err != nil {
+		t.Fatalf("handle turn failed: %v", err)
+	}
+	if resp.Output != "continued-ok" {
+		t.Fatalf("unexpected output: %q", resp.Output)
+	}
+	if p.calls != 3 {
+		t.Fatalf("expected 3 provider calls, got %d", p.calls)
+	}
+}
+
+func TestAdaptiveMaxTokens(t *testing.T) {
+	msgs := []llm.ChatMessage{
+		{Role: "system", Content: strings.Repeat("x", 200)},
+		{Role: "user", Content: strings.Repeat("y", 200)},
+	}
+	gotPlan := adaptiveMaxTokens(agent.Definition{Name: "plan", MaxTokens: 6000}, msgs)
+	if gotPlan != 6000 {
+		t.Fatalf("expected plan max_tokens to stay 6000, got %d", gotPlan)
+	}
+
+	longMsgs := []llm.ChatMessage{
+		{Role: "system", Content: strings.Repeat("x", 120000)},
+	}
+	gotLong := adaptiveMaxTokens(agent.Definition{Name: "build", MaxTokens: 16000}, longMsgs)
+	if gotLong != 16000 {
+		t.Fatalf("expected long prompt to keep 16000, got %d", gotLong)
+	}
+
+	gotKeep := adaptiveMaxTokens(agent.Definition{Name: "build", MaxTokens: 7000}, msgs)
+	if gotKeep != 7000 {
+		t.Fatalf("expected keep 7000, got %d", gotKeep)
+	}
+}
+
+func TestHandleTurnEmitsEvents(t *testing.T) {
+	p := &stubProvider{
+		responses: []string{
+			`{"type":"tool_call","tool":{"name":"read","args":{"path":"a.txt"}}}`,
+			`{"type":"final","content":"done"}`,
+		},
+	}
+	a, _ := setupTestApp(t, p)
+	var events []Event
+	ctx := WithEventHandler(context.Background(), func(ev Event) {
+		events = append(events, ev)
+	})
+	_, err := a.HandleTurn(ctx, TurnRequest{
+		Input: "read a file",
+		Agent: "build",
+	}, fixedApprover(true))
+	if err != nil {
+		t.Fatalf("handle turn failed: %v", err)
+	}
+	if len(events) == 0 {
+		t.Fatalf("expected emitted events")
+	}
+}
+
+func TestHandleTurnUsesPlannerThenWriter(t *testing.T) {
+	p := &plannerWriterProvider{}
+	a, _ := setupTestApp(t, p)
+	resp, err := a.HandleTurn(context.Background(), TurnRequest{
+		Input: "give detailed output",
+		Agent: "build",
+	}, fixedApprover(true))
+	if err != nil {
+		t.Fatalf("handle turn failed: %v", err)
+	}
+	if resp.Output != "detailed final output" {
+		t.Fatalf("unexpected output: %q", resp.Output)
+	}
+	if p.calls != 2 {
+		t.Fatalf("expected 2 llm calls, got %d", p.calls)
+	}
+	if len(p.streams) < 2 || p.streams[0] {
+		t.Fatalf("expected planner call to be non-stream")
+	}
+	if !p.streams[1] {
+		t.Fatalf("expected writer call to be stream")
+	}
+	if p.maxTokens[0] > plannerTokenCap {
+		t.Fatalf("expected planner max_tokens <= %d, got %d", plannerTokenCap, p.maxTokens[0])
+	}
+}
+
+func TestNeedsContinuationPatchMarkerDetection(t *testing.T) {
+	inline := `final text mentions "*** BEGIN PATCH" in explanation only`
+	if needsContinuation("stop", inline) {
+		t.Fatalf("inline marker mention should not trigger continuation")
+	}
+	standalone := "header\n*** BEGIN PATCH\n+line\n"
+	if !needsContinuation("stop", standalone) {
+		t.Fatalf("standalone patch begin without end should trigger continuation")
 	}
 }
 

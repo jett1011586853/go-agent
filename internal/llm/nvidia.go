@@ -25,6 +25,12 @@ type NVIDIAProvider struct {
 	clearThinking  bool
 }
 
+type nvidiaStream struct {
+	body    io.ReadCloser
+	scanner *bufio.Scanner
+	closed  bool
+}
+
 func NewNVIDIAProvider(
 	baseURL string,
 	apiKey string,
@@ -69,30 +75,11 @@ func (p *NVIDIAProvider) Chat(ctx context.Context, req ChatRequest) (ChatRespons
 		req.MaxTokens = 1200
 	}
 
-	payload := map[string]any{
-		"model":       req.Model,
-		"messages":    req.Messages,
-		"temperature": req.Temperature,
-		"top_p":       1,
-		"max_tokens":  req.MaxTokens,
-	}
 	stream := p.stream
 	if req.Stream != nil {
 		stream = *req.Stream
 	}
-	enableThinking := p.enableThinking
-	if req.EnableThinking != nil {
-		enableThinking = *req.EnableThinking
-	}
-	clearThinking := p.clearThinking
-	if req.ClearThinking != nil {
-		clearThinking = *req.ClearThinking
-	}
-	payload["stream"] = stream
-	payload["chat_template_kwargs"] = map[string]any{
-		"enable_thinking": enableThinking,
-		"clear_thinking":  clearThinking,
-	}
+	payload := p.buildPayload(req, stream)
 	rawBody, err := json.Marshal(payload)
 	if err != nil {
 		return ChatResponse{}, err
@@ -164,7 +151,8 @@ func (p *NVIDIAProvider) Chat(ctx context.Context, req ChatRequest) (ChatRespons
 			return ChatResponse{}, fmt.Errorf("chat request HTTP %d: %s", resp.StatusCode, string(body))
 		}
 
-		out, parseErr := parseResponse(resp.Body, stream)
+		deltaHandler := streamHandlerFromContext(ctx)
+		out, parseErr := parseResponse(resp.Body, stream, deltaHandler)
 		_ = resp.Body.Close()
 		if parseErr == nil {
 			if cancel != nil {
@@ -192,11 +180,78 @@ func (p *NVIDIAProvider) Chat(ctx context.Context, req ChatRequest) (ChatRespons
 	}
 }
 
-func parseResponse(body io.Reader, stream bool) (ChatResponse, error) {
+func (p *NVIDIAProvider) ChatStream(ctx context.Context, req ChatRequest) (Stream, error) {
+	if p.apiKey == "" {
+		return nil, errors.New("NVIDIA_API_KEY is required")
+	}
+	if req.Model == "" {
+		return nil, errors.New("model is required")
+	}
+	if len(req.Messages) == 0 {
+		return nil, errors.New("messages cannot be empty")
+	}
+	if req.MaxTokens <= 0 {
+		req.MaxTokens = 1200
+	}
+
+	payload := p.buildPayload(req, true)
+	rawBody, err := json.Marshal(payload)
+	if err != nil {
+		return nil, err
+	}
+	httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost, p.baseURL+"/chat/completions", bytes.NewReader(rawBody))
+	if err != nil {
+		return nil, err
+	}
+	httpReq.Header.Set("Authorization", "Bearer "+p.apiKey)
+	httpReq.Header.Set("Content-Type", "application/json")
+	httpReq.Header.Set("Accept", "text/event-stream")
+
+	resp, err := p.httpClient.Do(httpReq)
+	if err != nil {
+		return nil, fmt.Errorf("chat stream request failed: %w", err)
+	}
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		body, _ := io.ReadAll(io.LimitReader(resp.Body, 8*1024*1024))
+		_ = resp.Body.Close()
+		return nil, fmt.Errorf("chat stream request HTTP %d: %s", resp.StatusCode, strings.TrimSpace(string(body)))
+	}
+	sc := bufio.NewScanner(resp.Body)
+	sc.Buffer(make([]byte, 0, 64*1024), 8*1024*1024)
+	return &nvidiaStream{
+		body:    resp.Body,
+		scanner: sc,
+	}, nil
+}
+
+func parseResponse(body io.Reader, stream bool, deltaHandler StreamHandler) (ChatResponse, error) {
 	if stream {
-		return parseStreamResponse(body)
+		return parseStreamResponse(body, deltaHandler)
 	}
 	return parseJSONResponse(body)
+}
+
+func (p *NVIDIAProvider) buildPayload(req ChatRequest, stream bool) map[string]any {
+	enableThinking := p.enableThinking
+	if req.EnableThinking != nil {
+		enableThinking = *req.EnableThinking
+	}
+	clearThinking := p.clearThinking
+	if req.ClearThinking != nil {
+		clearThinking = *req.ClearThinking
+	}
+	return map[string]any{
+		"model":       req.Model,
+		"messages":    req.Messages,
+		"temperature": req.Temperature,
+		"top_p":       1,
+		"max_tokens":  req.MaxTokens,
+		"stream":      stream,
+		"chat_template_kwargs": map[string]any{
+			"enable_thinking": enableThinking,
+			"clear_thinking":  clearThinking,
+		},
+	}
 }
 
 func parseJSONResponse(body io.Reader) (ChatResponse, error) {
@@ -210,6 +265,7 @@ func parseJSONResponse(body io.Reader) (ChatResponse, error) {
 				Content          any    `json:"content"`
 				ReasoningContent string `json:"reasoning_content"`
 			} `json:"message"`
+			FinishReason string `json:"finish_reason"`
 		} `json:"choices"`
 	}
 	if err := json.Unmarshal(raw, &parsed); err != nil {
@@ -219,17 +275,19 @@ func parseJSONResponse(body io.Reader) (ChatResponse, error) {
 		return ChatResponse{}, errors.New("empty chat choices")
 	}
 	return ChatResponse{
-		Content:   coerceContent(parsed.Choices[0].Message.Content),
-		Reasoning: strings.TrimSpace(parsed.Choices[0].Message.ReasoningContent),
+		Content:      coerceContent(parsed.Choices[0].Message.Content),
+		Reasoning:    strings.TrimSpace(parsed.Choices[0].Message.ReasoningContent),
+		FinishReason: strings.TrimSpace(parsed.Choices[0].FinishReason),
 	}, nil
 }
 
-func parseStreamResponse(body io.Reader) (ChatResponse, error) {
+func parseStreamResponse(body io.Reader, deltaHandler StreamHandler) (ChatResponse, error) {
 	scanner := bufio.NewScanner(body)
 	scanner.Buffer(make([]byte, 0, 64*1024), 8*1024*1024)
 
 	var content strings.Builder
 	var reasoning strings.Builder
+	finishReason := ""
 
 	for scanner.Scan() {
 		line := strings.TrimSpace(scanner.Text())
@@ -250,6 +308,7 @@ func parseStreamResponse(body io.Reader) (ChatResponse, error) {
 					Content          string `json:"content"`
 					ReasoningContent string `json:"reasoning_content"`
 				} `json:"delta"`
+				FinishReason string `json:"finish_reason"`
 			} `json:"choices"`
 		}
 		if err := json.Unmarshal([]byte(data), &chunk); err != nil {
@@ -258,11 +317,22 @@ func parseStreamResponse(body io.Reader) (ChatResponse, error) {
 		if len(chunk.Choices) == 0 {
 			continue
 		}
-		if chunk.Choices[0].Delta.ReasoningContent != "" {
-			reasoning.WriteString(chunk.Choices[0].Delta.ReasoningContent)
+		deltaReasoning := chunk.Choices[0].Delta.ReasoningContent
+		deltaContent := chunk.Choices[0].Delta.Content
+		if fr := strings.TrimSpace(chunk.Choices[0].FinishReason); fr != "" {
+			finishReason = fr
 		}
-		if chunk.Choices[0].Delta.Content != "" {
-			content.WriteString(chunk.Choices[0].Delta.Content)
+		if deltaReasoning != "" {
+			reasoning.WriteString(deltaReasoning)
+		}
+		if deltaContent != "" {
+			content.WriteString(deltaContent)
+		}
+		if deltaHandler != nil && (deltaContent != "" || deltaReasoning != "") {
+			deltaHandler(StreamDelta{
+				Content:   deltaContent,
+				Reasoning: deltaReasoning,
+			})
 		}
 	}
 	if err := scanner.Err(); err != nil {
@@ -272,8 +342,9 @@ func parseStreamResponse(body io.Reader) (ChatResponse, error) {
 		return ChatResponse{}, errors.New("empty stream response")
 	}
 	return ChatResponse{
-		Content:   content.String(),
-		Reasoning: reasoning.String(),
+		Content:      content.String(),
+		Reasoning:    reasoning.String(),
+		FinishReason: finishReason,
 	}, nil
 }
 
@@ -371,4 +442,60 @@ func coerceContent(v any) string {
 	default:
 		return ""
 	}
+}
+
+func (s *nvidiaStream) Recv() (*StreamEvent, error) {
+	if s == nil || s.scanner == nil {
+		return nil, io.EOF
+	}
+	for s.scanner.Scan() {
+		line := strings.TrimSpace(s.scanner.Text())
+		if !strings.HasPrefix(line, "data:") {
+			continue
+		}
+		data := strings.TrimSpace(strings.TrimPrefix(line, "data:"))
+		if data == "" {
+			continue
+		}
+		if data == "[DONE]" {
+			return nil, io.EOF
+		}
+
+		var chunk struct {
+			Choices []struct {
+				Delta struct {
+					Content          string `json:"content"`
+					ReasoningContent string `json:"reasoning_content"`
+				} `json:"delta"`
+				FinishReason string `json:"finish_reason"`
+			} `json:"choices"`
+		}
+		if err := json.Unmarshal([]byte(data), &chunk); err != nil {
+			return &StreamEvent{Type: "error", Text: err.Error()}, nil
+		}
+		if len(chunk.Choices) == 0 {
+			continue
+		}
+		if fr := strings.TrimSpace(chunk.Choices[0].FinishReason); fr != "" {
+			return &StreamEvent{Type: "meta", Text: "finish_reason=" + fr}, nil
+		}
+		if reasoning := chunk.Choices[0].Delta.ReasoningContent; reasoning != "" {
+			return &StreamEvent{Type: "delta", Text: reasoning}, nil
+		}
+		if content := chunk.Choices[0].Delta.Content; content != "" {
+			return &StreamEvent{Type: "delta", Text: content}, nil
+		}
+	}
+	if err := s.scanner.Err(); err != nil {
+		return nil, err
+	}
+	return nil, io.EOF
+}
+
+func (s *nvidiaStream) Close() error {
+	if s == nil || s.closed || s.body == nil {
+		return nil
+	}
+	s.closed = true
+	return s.body.Close()
 }

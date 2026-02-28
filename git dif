@@ -1,0 +1,1890 @@
+[1mdiff --git a/README.md b/README.md[m
+[1mindex bbd800c..808892d 100644[m
+[1m--- a/README.md[m
+[1m+++ b/README.md[m
+[36m@@ -12,12 +12,18 @@[m [mThe previous gateway/orchestrator/RAG/OCR stack was removed.[m
+ - CLI-first coding agent[m
+ - Two primary agents: `build`, `plan`[m
+ - Turn loop: `LLM -> tool -> LLM ...` until final answer or request timeout[m
+[32m+[m[32m- CLI live stream output from provider SSE chunks (`[llm-stream] ...`) during each turn[m
+[32m+[m[32m- CLI event feed for retrieval/tool/meta stages (`[retrieval]`, `[tool]`, `[meta]`)[m
+[32m+[m[32m- Auto continuation on truncated model output (`finish_reason=length` or missing `*** END PATCH`)[m
+[32m+[m[32m- Adaptive `max_tokens` budgeting based on agent type and prompt size[m
+[32m+[m[32m- Two-stage LLM loop: non-stream planner action first, stream writer only for long final output[m
+ - Permission engine: `allow / ask / deny` with wildcard and exact-match priority[m
+ - Tool registry: `list`, `glob`, `grep`, `read`, `edit`, `patch`, `bash`, `webfetch`, `websearch`[m
+ - Session persistence (BoltDB): session + turns + audit + approvals[m
+ - Compaction trigger: turn-count or token-estimate based rolling summary + pinned facts[m
+ - Workspace signals in context: root/top entries/git branch hint[m
+ - Optional local embedding retrieval (NIM on `localhost:8001`) for TopK code context injection[m
+[32m+[m[32m- Incremental embedding index updates via tool hook + filesystem watcher (debounced queue)[m
+ - Optional HTTP server:[m
+   - `POST /sessions`[m
+   - `POST /sessions/{id}/turns`[m
+[36m@@ -60,9 +66,10 @@[m [mOptional reliability knobs in `.env`:[m
+ - `CLEAR_THINKING=false`[m
+ - `TURN_TIMEOUT=90m`[m
+ - `ONESHOT_TIMEOUT=60m`[m
+[31m-- `EMBEDDING_ENABLED=true`[m
+[32m+[m[32m- `EMBEDDING_ENABLED=true` (default in `opencode/agent.yaml`)[m
+ - `EMBEDDING_BASE_URL=http://localhost:8001`[m
+ - `EMBEDDING_MODEL=nvidia/llama-3.2-nv-embedqa-1b-v2`[m
+[32m+[m[32m- `EMBEDDING_IGNORE_DIRS=.git,.run,node_modules,dist,build,vendor,bin`[m
+ [m
+ 2) Start CLI[m
+ [m
+[1mdiff --git a/cmd/agent/main.go b/cmd/agent/main.go[m
+[1mindex 208d0a9..f691c3f 100644[m
+[1m--- a/cmd/agent/main.go[m
+[1m+++ b/cmd/agent/main.go[m
+[36m@@ -9,6 +9,7 @@[m [mimport ([m
+ 	"net/http"[m
+ 	"os"[m
+ 	"strings"[m
+[32m+[m	[32m"sync"[m
+ 	"time"[m
+ [m
+ 	"go-agent/internal/agent"[m
+[36m@@ -16,6 +17,7 @@[m [mimport ([m
+ 	"go-agent/internal/config"[m
+ 	ctxbuild "go-agent/internal/context"[m
+ 	"go-agent/internal/embednim"[m
+[32m+[m	[32m"go-agent/internal/indexer"[m
+ 	"go-agent/internal/llm"[m
+ 	"go-agent/internal/permission"[m
+ 	"go-agent/internal/retrieval"[m
+[36m@@ -81,7 +83,19 @@[m [mfunc main() {[m
+ 	contextBuilder := ctxbuild.NewBuilder(cfg.RulesFile, cfg.WorkspaceRoot, cfg.ContextTurnWindow)[m
+ [m
+ 	application := app.New(cfg, agents, sessionMgr, contextBuilder, permEngine, registry, llmProvider)[m
+[32m+[m	[32mindexCtx, cancelIndexer := context.WithCancel(context.Background())[m
+[32m+[m	[32mdefer cancelIndexer()[m
+ 	if cfg.EmbeddingEnabled {[m
+[32m+[m		[32mlog.Printf([m
+[32m+[m			[32m"embedding retrieval enabled: base=%s model=%s index=%s topk=%d per_file=%d chunk_lines=%d overlap=%d",[m
+[32m+[m			[32mcfg.EmbeddingBaseURL,[m
+[32m+[m			[32mcfg.EmbeddingModel,[m
+[32m+[m			[32mcfg.EmbeddingIndex,[m
+[32m+[m			[32mcfg.EmbeddingTopK,[m
+[32m+[m			[32mcfg.EmbeddingPerFile,[m
+[32m+[m			[32mcfg.EmbeddingChunk,[m
+[32m+[m			[32mcfg.EmbeddingOverlap,[m
+[32m+[m		[32m)[m
+ 		embedClient := embednim.New(cfg.EmbeddingBaseURL, cfg.EmbeddingModel, cfg.RequestTimeout)[m
+ 		retriever := retrieval.NewService(embedClient, retrieval.Options{[m
+ 			Root:            cfg.WorkspaceRoot,[m
+[36m@@ -92,6 +106,7 @@[m [mfunc main() {[m
+ 			TopK:            cfg.EmbeddingTopK,[m
+ 			PerFileLimit:    cfg.EmbeddingPerFile,[m
+ 			MaxContextChars: cfg.EmbeddingMaxCtx,[m
+[32m+[m			[32mIgnoreDirs:      cfg.EmbeddingIgnore,[m
+ 		})[m
+ 		initCtx, cancel := withOptionalTimeout(context.Background(), cfg.EmbeddingInitTime)[m
+ 		err := retriever.LoadOrBuild(initCtx, false)[m
+[36m@@ -107,7 +122,29 @@[m [mfunc main() {[m
+ 				cfg.EmbeddingBaseURL,[m
+ 				cfg.EmbeddingModel,[m
+ 			)[m
+[32m+[m			[32midxService := indexer.NewService(cfg.WorkspaceRoot, retriever, indexer.Options{})[m
+[32m+[m			[32midxService.Start(indexCtx, func(err error) {[m
+[32m+[m				[32mlog.Printf("warning: indexer update failed: %v", err)[m
+[32m+[m			[32m})[m
+[32m+[m			[32mif err := registry.RegisterHook(indexer.NewToolHook(idxService)); err != nil {[m
+[32m+[m				[32mlog.Printf("warning: failed to register index hook: %v", err)[m
+[32m+[m			[32m}[m
+[32m+[m			[32mif err := indexer.StartWorkspaceWatcher([m
+[32m+[m				[32mindexCtx,[m
+[32m+[m				[32mcfg.WorkspaceRoot,[m
+[32m+[m				[32mcfg.EmbeddingIgnore,[m
+[32m+[m				[32midxService.Enqueue,[m
+[32m+[m				[32mfunc(err error) {[m
+[32m+[m					[32mlog.Printf("warning: index watcher error: %v", err)[m
+[32m+[m				[32m},[m
+[32m+[m			[32m); err != nil {[m
+[32m+[m				[32mlog.Printf("warning: index watcher disabled: %v", err)[m
+[32m+[m			[32m} else {[m
+[32m+[m				[32mlog.Printf("embedding index watcher started on %s", cfg.WorkspaceRoot)[m
+[32m+[m			[32m}[m
+ 		}[m
+[32m+[m	[32m} else {[m
+[32m+[m		[32mlog.Printf("embedding retrieval disabled: embedding_enabled=false")[m
+ 	}[m
+ [m
+ 	if cfg.EnableHTTP {[m
+[36m@@ -132,11 +169,16 @@[m [mfunc main() {[m
+ func runOneShot(a *app.App, cfg config.Config, sessionID, agentName, task string) {[m
+ 	ctx, cancel := withOptionalTimeout(context.Background(), cfg.OneShotTimeout)[m
+ 	defer cancel()[m
+[32m+[m	[32mevents := newCLIEventPrinter()[m
+[32m+[m	[32mctx = app.WithEventHandler(ctx, events.Handle)[m
+[32m+[m	[32mstream := newCLIStreamPrinter()[m
+[32m+[m	[32mctx = llm.WithStreamHandler(ctx, stream.Handle)[m
+ 	resp, err := a.HandleTurn(ctx, app.TurnRequest{[m
+ 		SessionID: sessionID,[m
+ 		Agent:     agentName,[m
+ 		Input:     task,[m
+ 	}, cliApprover{})[m
+[32m+[m	[32mstream.Finish()[m
+ 	if err != nil {[m
+ 		log.Fatal(err)[m
+ 	}[m
+[36m@@ -219,6 +261,10 @@[m [mfunc runREPL(a *app.App, cfg config.Config, initSessionID, initAgent string) {[m
+ 		}[m
+ [m
+ 		ctx, cancel := withOptionalTimeout(context.Background(), cfg.TurnTimeout)[m
+[32m+[m		[32mevents := newCLIEventPrinter()[m
+[32m+[m		[32mctx = app.WithEventHandler(ctx, events.Handle)[m
+[32m+[m		[32mstream := newCLIStreamPrinter()[m
+[32m+[m		[32mctx = llm.WithStreamHandler(ctx, stream.Handle)[m
+ 		start := time.Now()[m
+ 		resp, err := a.HandleTurn(ctx, app.TurnRequest{[m
+ 			SessionID: currentSession,[m
+[36m@@ -226,6 +272,7 @@[m [mfunc runREPL(a *app.App, cfg config.Config, initSessionID, initAgent string) {[m
+ 			Input:     line,[m
+ 		}, cliApprover{})[m
+ 		cancel()[m
+[32m+[m		[32mstream.Finish()[m
+ 		if err != nil {[m
+ 			fmt.Printf("error: %v\n", err)[m
+ 			continue[m
+[36m@@ -236,6 +283,69 @@[m [mfunc runREPL(a *app.App, cfg config.Config, initSessionID, initAgent string) {[m
+ 	}[m
+ }[m
+ [m
+[32m+[m[32mtype cliStreamPrinter struct {[m
+[32m+[m	[32mmu      sync.Mutex[m
+[32m+[m	[32mstarted bool[m
+[32m+[m[32m}[m
+[32m+[m
+[32m+[m[32mfunc newCLIStreamPrinter() *cliStreamPrinter {[m
+[32m+[m	[32mreturn &cliStreamPrinter{}[m
+[32m+[m[32m}[m
+[32m+[m
+[32m+[m[32mfunc (p *cliStreamPrinter) Handle(delta llm.StreamDelta) {[m
+[32m+[m	[32mtext := delta.Reasoning[m
+[32m+[m	[32mif strings.TrimSpace(text) == "" {[m
+[32m+[m		[32mtext = delta.Content[m
+[32m+[m	[32m}[m
+[32m+[m	[32mif strings.TrimSpace(text) == "" {[m
+[32m+[m		[32mreturn[m
+[32m+[m	[32m}[m
+[32m+[m	[32mp.mu.Lock()[m
+[32m+[m	[32mdefer p.mu.Unlock()[m
+[32m+[m	[32mif !p.started {[m
+[32m+[m		[32mfmt.Print("\n[llm-stream] ")[m
+[32m+[m		[32mp.started = true[m
+[32m+[m	[32m}[m
+[32m+[m	[32mfmt.Print(text)[m
+[32m+[m[32m}[m
+[32m+[m
+[32m+[m[32mfunc (p *cliStreamPrinter) Finish() {[m
+[32m+[m	[32mp.mu.Lock()[m
+[32m+[m	[32mdefer p.mu.Unlock()[m
+[32m+[m	[32mif p.started {[m
+[32m+[m		[32mfmt.Println()[m
+[32m+[m		[32mp.started = false[m
+[32m+[m	[32m}[m
+[32m+[m[32m}[m
+[32m+[m
+[32m+[m[32mtype cliEventPrinter struct {[m
+[32m+[m	[32mmu sync.Mutex[m
+[32m+[m[32m}[m
+[32m+[m
+[32m+[m[32mfunc newCLIEventPrinter() *cliEventPrinter {[m
+[32m+[m	[32mreturn &cliEventPrinter{}[m
+[32m+[m[32m}[m
+[32m+[m
+[32m+[m[32mfunc (p *cliEventPrinter) Handle(ev app.Event) {[m
+[32m+[m	[32mif p == nil {[m
+[32m+[m		[32mreturn[m
+[32m+[m	[32m}[m
+[32m+[m	[32mtext := strings.TrimSpace(ev.Text)[m
+[32m+[m	[32mif text == "" {[m
+[32m+[m		[32mreturn[m
+[32m+[m	[32m}[m
+[32m+[m	[32mp.mu.Lock()[m
+[32m+[m	[32mdefer p.mu.Unlock()[m
+[32m+[m	[32mswitch strings.ToLower(strings.TrimSpace(ev.Type)) {[m
+[32m+[m	[32mcase "retrieval":[m
+[32m+[m		[32mfmt.Printf("\n[retrieval]\n%s\n", text)[m
+[32m+[m	[32mcase "tool":[m
+[32m+[m		[32mfmt.Printf("\n[tool]\n%s\n", text)[m
+[32m+[m	[32mdefault:[m
+[32m+[m		[32mfmt.Printf("\n[meta] %s\n", text)[m
+[32m+[m	[32m}[m
+[32m+[m[32m}[m
+[32m+[m
+ func printHelp() {[m
+ 	fmt.Println("Commands:")[m
+ 	fmt.Println("  /help                 Show help")[m
+[1mdiff --git a/go.mod b/go.mod[m
+[1mindex 7d71296..7197f5a 100644[m
+[1m--- a/go.mod[m
+[1m+++ b/go.mod[m
+[36m@@ -11,6 +11,7 @@[m [mrequire ([m
+ 	github.com/ebitengine/gomobile v0.0.0-20250923094054-ea854a63cce1 // indirect[m
+ 	github.com/ebitengine/hideconsole v1.0.0 // indirect[m
+ 	github.com/ebitengine/purego v0.9.0 // indirect[m
+[32m+[m	[32mgithub.com/fsnotify/fsnotify v1.8.0 // indirect[m
+ 	github.com/hajimehoshi/ebiten/v2 v2.9.8 // indirect[m
+ 	github.com/jezek/xgb v1.1.1 // indirect[m
+ 	github.com/kr/pretty v0.3.0 // indirect[m
+[1mdiff --git a/go.sum b/go.sum[m
+[1mindex d1d1eda..0e92b27 100644[m
+[1m--- a/go.sum[m
+[1m+++ b/go.sum[m
+[36m@@ -7,6 +7,8 @@[m [mgithub.com/ebitengine/hideconsole v1.0.0 h1:5J4U0kXF+pv/DhiXt5/lTz0eO5ogJ1iXb8Yj[m
+ github.com/ebitengine/hideconsole v1.0.0/go.mod h1:hTTBTvVYWKBuxPr7peweneWdkUwEuHuB3C1R/ielR1A=[m
+ github.com/ebitengine/purego v0.9.0 h1:mh0zpKBIXDceC63hpvPuGLiJ8ZAa3DfrFTudmfi8A4k=[m
+ github.com/ebitengine/purego v0.9.0/go.mod h1:iIjxzd6CiRiOG0UyXP+V1+jWqUXVjPKLAI0mRfJZTmQ=[m
+[32m+[m[32mgithub.com/fsnotify/fsnotify v1.8.0 h1:dAwr6QBTBZIkG8roQaJjGof0pp0EeF+tNV7YBP3F/8M=[m
+[32m+[m[32mgithub.com/fsnotify/fsnotify v1.8.0/go.mod h1:8jBTzvmWwFyi3Pb8djgCCO5IBqzKJ/Jwo8TRcHyHii0=[m
+ github.com/hajimehoshi/ebiten/v2 v2.9.8 h1:xI0hIctuTMjFFk8lqEcUzoLjFy8d/FOBa9PDTWX+1rw=[m
+ github.com/hajimehoshi/ebiten/v2 v2.9.8/go.mod h1:DAt4tnkYYpCvu3x9i1X/nK/vOruNXIlYq/tBXxnhrXM=[m
+ github.com/jezek/xgb v1.1.1 h1:bE/r8ZZtSv7l9gk6nU0mYx51aXrvnyb44892TwSaqS4=[m
+[1mdiff --git a/internal/app/app.go b/internal/app/app.go[m
+[1mindex f9b9ebb..31cd417 100644[m
+[1m--- a/internal/app/app.go[m
+[1m+++ b/internal/app/app.go[m
+[36m@@ -59,8 +59,23 @@[m [mtype App struct {[m
+ const ([m
+ 	maxConsecutiveInvalidModelOutputs = 8[m
+ 	maxConsecutiveSameToolCalls       = 12[m
+[32m+[m	[32mmaxContinuationRounds             = 3[m
+[32m+[m	[32mcontinuationTailLines             = 50[m
+[32m+[m	[32mcontinuationTailChars             = 6000[m
+[32m+[m	[32mplannerTokenCap                   = 2048[m
+ )[m
+ [m
+[32m+[m[32mconst plannerControlMessage = `Planner phase rules:[m
+[32m+[m[32m- Return only one compact JSON action (tool_call or final).[m
+[32m+[m[32m- Keep final.content concise (<= 240 chars) and focused on decision.[m
+[32m+[m[32m- If detailed final response is needed, set final.content to "__NEED_WRITER__" and put key points in next_steps.[m
+[32m+[m[32m- Do not output long patches in planner phase.`[m
+[32m+[m
+[32m+[m[32mconst writerControlMessage = `Writer phase rules:[m
+[32m+[m[32m- Produce the final user-facing output now; do not output JSON.[m
+[32m+[m[32m- Be complete and concrete.[m
+[32m+[m[32m- If returning a patch, wrap it with "*** BEGIN PATCH" and "*** END PATCH".`[m
+[32m+[m
+ type Retriever interface {[m
+ 	Retrieve(ctx context.Context, query string) (string, error)[m
+ }[m
+[36m@@ -158,6 +173,7 @@[m [mfunc (a *App) HandleTurn(ctx context.Context, req TurnRequest, approver Approver[m
+ 	if a.retriever != nil {[m
+ 		retrieved, retrieveErr := a.retriever.Retrieve(ctx, cleanedInput)[m
+ 		if retrieveErr != nil {[m
+[32m+[m			[32memitEvent(ctx, Event{Type: "meta", Text: "retrieval failed: " + retrieveErr.Error()})[m
+ 			turn.Audit = append(turn.Audit, message.AuditEvent{[m
+ 				Type:      "retrieval_error",[m
+ 				Detail:    retrieveErr.Error(),[m
+[36m@@ -165,6 +181,7 @@[m [mfunc (a *App) HandleTurn(ctx context.Context, req TurnRequest, approver Approver[m
+ 			})[m
+ 		} else if strings.TrimSpace(retrieved) != "" {[m
+ 			extraSystem = append(extraSystem, "Retrieved local code context:\n"+retrieved)[m
+[32m+[m			[32memitEvent(ctx, Event{Type: "retrieval", Text: summarizeRetrievedContext(retrieved)})[m
+ 			turn.Audit = append(turn.Audit, message.AuditEvent{[m
+ 				Type:      "retrieval_context_added",[m
+ 				Detail:    fmt.Sprintf("chars=%d", len([]rune(retrieved))),[m
+[36m@@ -175,7 +192,8 @@[m [mfunc (a *App) HandleTurn(ctx context.Context, req TurnRequest, approver Approver[m
+ [m
+ 	for step := 1; ; step++ {[m
+ 		msgs := a.context.BuildWithExtras(def.Name, sess, current, toolSchemas, extraSystem)[m
+[31m-		resp, llmErr := a.chatWithRateLimitFallback(ctx, def, msgs, &turn)[m
+[32m+[m		[32memitEvent(ctx, Event{Type: "meta", Text: fmt.Sprintf("planner step %d", step)})[m
+[32m+[m		[32mresp, llmErr := a.chatPlanner(ctx, def, msgs, &turn)[m
+ 		if llmErr != nil {[m
+ 			a.persistFailure(ctx, sess.ID, &turn, current, "llm_error", llmErr.Error())[m
+ 			if isRateLimited(llmErr) {[m
+[36m@@ -210,7 +228,22 @@[m [mfunc (a *App) HandleTurn(ctx context.Context, req TurnRequest, approver Approver[m
+ 		consecutiveInvalid = 0[m
+ [m
+ 		if action.Type == "final" {[m
+[31m-			finalOutput = strings.TrimSpace(action.Content)[m
+[32m+[m			[32mif shouldUseWriter(action) {[m
+[32m+[m				[32memitEvent(ctx, Event{Type: "meta", Text: "writer phase started"})[m
+[32m+[m				[32mwriterResp, writerErr := a.chatWriter(ctx, def, msgs, action, &turn)[m
+[32m+[m				[32mif writerErr != nil {[m
+[32m+[m					[32ma.persistFailure(ctx, sess.ID, &turn, current, "writer_error", writerErr.Error())[m
+[32m+[m					[32mreturn TurnResponse{}, fmt.Errorf("writer failed: %w", writerErr)[m
+[32m+[m				[32m}[m
+[32m+[m				[32mfinalOutput = strings.TrimSpace(writerResp.Content)[m
+[32m+[m				[32mturn.Audit = append(turn.Audit, message.AuditEvent{[m
+[32m+[m					[32mType:      "writer_used",[m
+[32m+[m					[32mDetail:    fmt.Sprintf("finish_reason=%s", strings.TrimSpace(writerResp.FinishReason)),[m
+[32m+[m					[32mCreatedAt: time.Now().UTC(),[m
+[32m+[m				[32m})[m
+[32m+[m			[32m} else {[m
+[32m+[m				[32mfinalOutput = strings.TrimSpace(action.Content)[m
+[32m+[m			[32m}[m
+ 			if finalOutput == "" {[m
+ 				finalOutput = "(empty final response)"[m
+ 			}[m
+[36m@@ -357,6 +390,7 @@[m [mfunc (a *App) HandleTurn(ctx context.Context, req TurnRequest, approver Approver[m
+ 		}[m
+ [m
+ 		toolRes, runErr := a.tools.Run(ctx, toolName, action.Tool.Args)[m
+[32m+[m		[32memitEvent(ctx, Event{Type: "tool", Text: "ran tool: " + toolName})[m
+ 		result := message.ToolResult{[m
+ 			ID:      callID,[m
+ 			Name:    toolName,[m
+[36m@@ -365,6 +399,9 @@[m [mfunc (a *App) HandleTurn(ctx context.Context, req TurnRequest, approver Approver[m
+ 		}[m
+ 		if runErr != nil {[m
+ 			result.Error = runErr.Error()[m
+[32m+[m			[32memitEvent(ctx, Event{Type: "tool", Text: "tool error: " + runErr.Error()})[m
+[32m+[m		[32m} else if strings.TrimSpace(result.Output) != "" {[m
+[32m+[m			[32memitEvent(ctx, Event{Type: "tool", Text: "tool output:\n" + clip(result.Output, 1200)})[m
+ 		}[m
+ 		turn.Results = append(turn.Results, result)[m
+ 		current = append(current, message.Message{[m
+[36m@@ -405,11 +442,27 @@[m [mfunc (a *App) chatWithRateLimitFallback([m
+ 	msgs []llm.ChatMessage,[m
+ 	turn *message.Turn,[m
+ ) (llm.ChatResponse, error) {[m
+[32m+[m	[32mmaxTokens := adaptiveMaxTokens(def, msgs)[m
+ 	req := llm.ChatRequest{[m
+ 		Model:       def.Model,[m
+ 		Messages:    msgs,[m
+ 		Temperature: def.Temperature,[m
+[31m-		MaxTokens:   def.MaxTokens,[m
+[32m+[m		[32mMaxTokens:   maxTokens,[m
+[32m+[m	[32m}[m
+[32m+[m	[32mreturn a.chatWithRateLimitFallbackReq(ctx, req, turn)[m
+[32m+[m[32m}[m
+[32m+[m
+[32m+[m[32mfunc (a *App) chatWithRateLimitFallbackReq([m
+[32m+[m	[32mctx context.Context,[m
+[32m+[m	[32mreq llm.ChatRequest,[m
+[32m+[m	[32mturn *message.Turn,[m
+[32m+[m[32m) (llm.ChatResponse, error) {[m
+[32m+[m	[32mif turn != nil {[m
+[32m+[m		[32mturn.Audit = append(turn.Audit, message.AuditEvent{[m
+[32m+[m			[32mType:      "adaptive_max_tokens",[m
+[32m+[m			[32mDetail:    fmt.Sprintf("adaptive=%d prompt_est_tokens=%d", req.MaxTokens, estimatePromptTokens(req.Messages)),[m
+[32m+[m			[32mCreatedAt: time.Now().UTC(),[m
+[32m+[m		[32m})[m
+ 	}[m
+ 	resp, err := a.llm.Chat(ctx, req)[m
+ 	if err == nil {[m
+[36m@@ -447,6 +500,135 @@[m [mfunc (a *App) chatWithRateLimitFallback([m
+ 	return a.llm.Chat(ctx, fallbackReq)[m
+ }[m
+ [m
+[32m+[m[32mfunc (a *App) chatPlanner([m
+[32m+[m	[32mctx context.Context,[m
+[32m+[m	[32mdef agent.Definition,[m
+[32m+[m	[32mmsgs []llm.ChatMessage,[m
+[32m+[m	[32mturn *message.Turn,[m
+[32m+[m[32m) (llm.ChatResponse, error) {[m
+[32m+[m	[32mplanMsgs := append([]llm.ChatMessage{}, msgs...)[m
+[32m+[m	[32mplanMsgs = append(planMsgs, llm.ChatMessage{[m
+[32m+[m		[32mRole:    "system",[m
+[32m+[m		[32mContent: plannerControlMessage,[m
+[32m+[m	[32m})[m
+[32m+[m	[32mmaxTokens := adaptiveMaxTokens(def, planMsgs)[m
+[32m+[m	[32mif maxTokens > plannerTokenCap {[m
+[32m+[m		[32mmaxTokens = plannerTokenCap[m
+[32m+[m	[32m}[m
+[32m+[m	[32mif maxTokens < 512 {[m
+[32m+[m		[32mmaxTokens = 512[m
+[32m+[m	[32m}[m
+[32m+[m	[32mstream := false[m
+[32m+[m	[32mreq := llm.ChatRequest{[m
+[32m+[m		[32mModel:       def.Model,[m
+[32m+[m		[32mMessages:    planMsgs,[m
+[32m+[m		[32mTemperature: def.Temperature,[m
+[32m+[m		[32mMaxTokens:   maxTokens,[m
+[32m+[m		[32mStream:      &stream,[m
+[32m+[m	[32m}[m
+[32m+[m	[32mreturn a.chatWithRateLimitFallbackReq(ctx, req, turn)[m
+[32m+[m[32m}[m
+[32m+[m
+[32m+[m[32mfunc (a *App) chatWriter([m
+[32m+[m	[32mctx context.Context,[m
+[32m+[m	[32mdef agent.Definition,[m
+[32m+[m	[32mmsgs []llm.ChatMessage,[m
+[32m+[m	[32maction modelAction,[m
+[32m+[m	[32mturn *message.Turn,[m
+[32m+[m[32m) (llm.ChatResponse, error) {[m
+[32m+[m	[32mwriterMsgs := append([]llm.ChatMessage{}, msgs...)[m
+[32m+[m	[32mwriterMsgs = append(writerMsgs, llm.ChatMessage{[m
+[32m+[m		[32mRole:    "system",[m
+[32m+[m		[32mContent: writerControlMessage,[m
+[32m+[m	[32m})[m
+[32m+[m	[32mwriterMsgs = append(writerMsgs, llm.ChatMessage{[m
+[32m+[m		[32mRole:    "user",[m
+[32m+[m		[32mContent: buildWriterPrompt(action),[m
+[32m+[m	[32m})[m
+[32m+[m	[32mmaxTokens := adaptiveMaxTokens(def, writerMsgs)[m
+[32m+[m	[32mif maxTokens < 2048 {[m
+[32m+[m		[32mmaxTokens = 2048[m
+[32m+[m	[32m}[m
+[32m+[m	[32mstream := true[m
+[32m+[m	[32mreq := llm.ChatRequest{[m
+[32m+[m		[32mModel:       def.Model,[m
+[32m+[m		[32mMessages:    writerMsgs,[m
+[32m+[m		[32mTemperature: def.Temperature,[m
+[32m+[m		[32mMaxTokens:   maxTokens,[m
+[32m+[m		[32mStream:      &stream,[m
+[32m+[m	[32m}[m
+[32m+[m	[32mreturn a.chatWithContinuationReq(ctx, req, turn)[m
+[32m+[m[32m}[m
+[32m+[m
+[32m+[m[32mfunc (a *App) chatWithContinuationReq([m
+[32m+[m	[32mctx context.Context,[m
+[32m+[m	[32mreq llm.ChatRequest,[m
+[32m+[m	[32mturn *message.Turn,[m
+[32m+[m[32m) (llm.ChatResponse, error) {[m
+[32m+[m	[32mbaseReq := req[m
+[32m+[m	[32mresp, err := a.chatWithRateLimitFallbackReq(ctx, baseReq, turn)[m
+[32m+[m	[32mif err != nil {[m
+[32m+[m		[32mreturn llm.ChatResponse{}, err[m
+[32m+[m	[32m}[m
+[32m+[m
+[32m+[m	[32mcombined := resp.Content[m
+[32m+[m	[32mfinish := strings.ToLower(strings.TrimSpace(resp.FinishReason))[m
+[32m+[m	[32mfor round := 1; round <= maxContinuationRounds; round++ {[m
+[32m+[m		[32mif !needsContinuation(finish, combined) {[m
+[32m+[m			[32mbreak[m
+[32m+[m		[32m}[m
+[32m+[m		[32memitEvent(ctx, Event{Type: "meta", Text: fmt.Sprintf("continuation round %d (finish_reason=%s)", round, finish)})[m
+[32m+[m		[32mtail := lastNLines(combined, continuationTailLines)[m
+[32m+[m		[32mtail = clip(tail, continuationTailChars)[m
+[32m+[m		[32mcontPrompt := buildContinuationPrompt(tail)[m
+[32m+[m
+[32m+[m		[32mcontReq := baseReq[m
+[32m+[m		[32mcontReq.Messages = append([]llm.ChatMessage{}, baseReq.Messages...)[m
+[32m+[m		[32mcontReq.Messages = append(contReq.Messages,[m
+[32m+[m			[32mllm.ChatMessage{[m
+[32m+[m				[32mRole:    "assistant",[m
+[32m+[m				[32mContent: combined,[m
+[32m+[m			[32m},[m
+[32m+[m			[32mllm.ChatMessage{[m
+[32m+[m				[32mRole:    "user",[m
+[32m+[m				[32mContent: contPrompt,[m
+[32m+[m			[32m},[m
+[32m+[m		[32m)[m
+[32m+[m		[32mnextResp, nextErr := a.chatWithRateLimitFallbackReq(ctx, contReq, turn)[m
+[32m+[m		[32mif nextErr != nil {[m
+[32m+[m			[32mreturn llm.ChatResponse{}, nextErr[m
+[32m+[m		[32m}[m
+[32m+[m		[32mcombined = mergeContinuation(combined, nextResp.Content)[m
+[32m+[m		[32mfinish = strings.ToLower(strings.TrimSpace(nextResp.FinishReason))[m
+[32m+[m		[32mresp.Reasoning += nextResp.Reasoning[m
+[32m+[m		[32mif turn != nil {[m
+[32m+[m			[32mturn.Audit = append(turn.Audit, message.AuditEvent{[m
+[32m+[m				[32mType:      "output_continuation",[m
+[32m+[m				[32mDetail:    fmt.Sprintf("round=%d finish_reason=%s", round, finish),[m
+[32m+[m				[32mCreatedAt: time.Now().UTC(),[m
+[32m+[m			[32m})[m
+[32m+[m		[32m}[m
+[32m+[m	[32m}[m
+[32m+[m	[32mresp.Content = combined[m
+[32m+[m	[32mresp.FinishReason = finish[m
+[32m+[m	[32mreturn resp, nil[m
+[32m+[m[32m}[m
+[32m+[m
+[32m+[m[32mfunc (a *App) chatWithContinuation([m
+[32m+[m	[32mctx context.Context,[m
+[32m+[m	[32mdef agent.Definition,[m
+[32m+[m	[32mmsgs []llm.ChatMessage,[m
+[32m+[m	[32mturn *message.Turn,[m
+[32m+[m[32m) (llm.ChatResponse, error) {[m
+[32m+[m	[32mreq := llm.ChatRequest{[m
+[32m+[m		[32mModel:       def.Model,[m
+[32m+[m		[32mMessages:    append([]llm.ChatMessage(nil), msgs...),[m
+[32m+[m		[32mTemperature: def.Temperature,[m
+[32m+[m		[32mMaxTokens:   adaptiveMaxTokens(def, msgs),[m
+[32m+[m	[32m}[m
+[32m+[m	[32mreturn a.chatWithContinuationReq(ctx, req, turn)[m
+[32m+[m[32m}[m
+[32m+[m
+ func isRateLimited(err error) bool {[m
+ 	if err == nil {[m
+ 		return false[m
+[36m@@ -455,6 +637,166 @@[m [mfunc isRateLimited(err error) bool {[m
+ 	return strings.Contains(lower, "http 429") || strings.Contains(lower, "rate limit")[m
+ }[m
+ [m
+[32m+[m[32mfunc needsContinuation(finishReason, content string) bool {[m
+[32m+[m	[32mfinishReason = strings.ToLower(strings.TrimSpace(finishReason))[m
+[32m+[m	[32mhasPatchBegin := strings.Contains(content, "*** BEGIN PATCH")[m
+[32m+[m	[32mhasPatchEnd := strings.Contains(content, "*** END PATCH")[m
+[32m+[m	[32mif hasPatchBegin && !hasPatchEnd {[m
+[32m+[m		[32mreturn true[m
+[32m+[m	[32m}[m
+[32m+[m	[32mif finishReason == "length" || finishReason == "max_tokens" {[m
+[32m+[m		[32mif hasPatchBegin && hasPatchEnd {[m
+[32m+[m			[32mreturn false[m
+[32m+[m		[32m}[m
+[32m+[m		[32mif _, err := parseModelAction(content); err == nil {[m
+[32m+[m			[32mreturn false[m
+[32m+[m		[32m}[m
+[32m+[m		[32mreturn true[m
+[32m+[m	[32m}[m
+[32m+[m	[32mreturn false[m
+[32m+[m[32m}[m
+[32m+[m
+[32m+[m[32mfunc buildContinuationPrompt(tail string) string {[m
+[32m+[m	[32mreturn strings.TrimSpace(`Your previous output was cut off.[m
+[32m+[m[32mContinue exactly from your previous last line and output only the remaining text.[m
+[32m+[m[32mDo not repeat any text that was already sent.[m
+[32m+[m[32mIf you are producing a patch, continue until "*** END PATCH" appears.[m
+[32m+[m
+[32m+[m[32mPrevious output tail:[m
+[32m+[m[32m` + tail)[m
+[32m+[m[32m}[m
+[32m+[m
+[32m+[m[32mfunc mergeContinuation(previous, next string) string {[m
+[32m+[m	[32mif next == "" {[m
+[32m+[m		[32mreturn previous[m
+[32m+[m	[32m}[m
+[32m+[m	[32mif previous == "" {[m
+[32m+[m		[32mreturn next[m
+[32m+[m	[32m}[m
+[32m+[m	[32mmaxOverlap := len(previous)[m
+[32m+[m	[32mif len(next) < maxOverlap {[m
+[32m+[m		[32mmaxOverlap = len(next)[m
+[32m+[m	[32m}[m
+[32m+[m	[32mif maxOverlap > 2000 {[m
+[32m+[m		[32mmaxOverlap = 2000[m
+[32m+[m	[32m}[m
+[32m+[m	[32mfor n := maxOverlap; n >= 32; n-- {[m
+[32m+[m		[32mif strings.HasSuffix(previous, next[:n]) {[m
+[32m+[m			[32mreturn previous + next[n:][m
+[32m+[m		[32m}[m
+[32m+[m	[32m}[m
+[32m+[m	[32mreturn previous + next[m
+[32m+[m[32m}[m
+[32m+[m
+[32m+[m[32mfunc lastNLines(text string, n int) string {[m
+[32m+[m	[32mif n <= 0 {[m
+[32m+[m		[32mreturn ""[m
+[32m+[m	[32m}[m
+[32m+[m	[32mlines := strings.Split(strings.ReplaceAll(text, "\r\n", "\n"), "\n")[m
+[32m+[m	[32mif len(lines) <= n {[m
+[32m+[m		[32mreturn text[m
+[32m+[m	[32m}[m
+[32m+[m	[32mreturn strings.Join(lines[len(lines)-n:], "\n")[m
+[32m+[m[32m}[m
+[32m+[m
+[32m+[m[32mfunc adaptiveMaxTokens(def agent.Definition, msgs []llm.ChatMessage) int {[m
+[32m+[m	[32mmaxTok := def.MaxTokens[m
+[32m+[m	[32mif maxTok <= 0 {[m
+[32m+[m		[32mmaxTok = 4096[m
+[32m+[m	[32m}[m
+[32m+[m	[32mname := strings.ToLower(strings.TrimSpace(def.Name))[m
+[32m+[m	[32mif name == "plan" && maxTok > 2048 {[m
+[32m+[m		[32mmaxTok = 2048[m
+[32m+[m	[32m}[m
+[32m+[m	[32mif name == "build" && maxTok > 16384 {[m
+[32m+[m		[32mmaxTok = 16384[m
+[32m+[m	[32m}[m
+[32m+[m
+[32m+[m	[32mpromptTokens := estimatePromptTokens(msgs)[m
+[32m+[m	[32mswitch {[m
+[32m+[m	[32mcase promptTokens >= 24000 && maxTok > 4096:[m
+[32m+[m		[32mmaxTok = 4096[m
+[32m+[m	[32mcase promptTokens >= 16000 && maxTok > 6144:[m
+[32m+[m		[32mmaxTok = 6144[m
+[32m+[m	[32mcase promptTokens >= 10000 && maxTok > 8192:[m
+[32m+[m		[32mmaxTok = 8192[m
+[32m+[m	[32m}[m
+[32m+[m	[32mif maxTok < 512 {[m
+[32m+[m		[32mmaxTok = 512[m
+[32m+[m	[32m}[m
+[32m+[m	[32mreturn maxTok[m
+[32m+[m[32m}[m
+[32m+[m
+[32m+[m[32mfunc estimatePromptTokens(msgs []llm.ChatMessage) int {[m
+[32m+[m	[32mtotalRunes := 0[m
+[32m+[m	[32mfor _, m := range msgs {[m
+[32m+[m		[32mtotalRunes += len([]rune(m.Role))[m
+[32m+[m		[32mtotalRunes += len([]rune(m.Content))[m
+[32m+[m	[32m}[m
+[32m+[m	[32mif totalRunes <= 0 {[m
+[32m+[m		[32mreturn 0[m
+[32m+[m	[32m}[m
+[32m+[m	[32mreturn (totalRunes + 3) / 4[m
+[32m+[m[32m}[m
+[32m+[m
+[32m+[m[32mfunc summarizeRetrievedContext(ctxText string) string {[m
+[32m+[m	[32mlines := strings.Split(strings.ReplaceAll(ctxText, "\r\n", "\n"), "\n")[m
+[32m+[m	[32mvar refs []string[m
+[32m+[m	[32mfor _, line := range lines {[m
+[32m+[m		[32mline = strings.TrimSpace(line)[m
+[32m+[m		[32mif strings.HasPrefix(line, "[CONTEXT ") {[m
+[32m+[m			[32mrefs = append(refs, line)[m
+[32m+[m		[32m}[m
+[32m+[m		[32mif len(refs) >= 6 {[m
+[32m+[m			[32mbreak[m
+[32m+[m		[32m}[m
+[32m+[m	[32m}[m
+[32m+[m	[32mif len(refs) == 0 {[m
+[32m+[m		[32mreturn "retrieved context added"[m
+[32m+[m	[32m}[m
+[32m+[m	[32mreturn "retrieved:\n" + strings.Join(refs, "\n")[m
+[32m+[m[32m}[m
+[32m+[m
+[32m+[m[32mfunc shouldUseWriter(action modelAction) bool {[m
+[32m+[m	[32mcontent := strings.TrimSpace(action.Content)[m
+[32m+[m	[32mif strings.EqualFold(content, "__NEED_WRITER__") {[m
+[32m+[m		[32mreturn true[m
+[32m+[m	[32m}[m
+[32m+[m	[32mif strings.Contains(content, "*** BEGIN PATCH") {[m
+[32m+[m		[32mreturn true[m
+[32m+[m	[32m}[m
+[32m+[m	[32mif len([]rune(content)) > 320 {[m
+[32m+[m		[32mreturn true[m
+[32m+[m	[32m}[m
+[32m+[m	[32m// If planner has structured key points, writer can turn them into polished output.[m
+[32m+[m	[32mreturn len(action.NextSteps) > 0[m
+[32m+[m[32m}[m
+[32m+[m
+[32m+[m[32mfunc buildWriterPrompt(action modelAction) string {[m
+[32m+[m	[32mvar b strings.Builder[m
+[32m+[m	[32mb.WriteString("Generate the final response now based on planner decision.\n")[m
+[32m+[m	[32mcontent := strings.TrimSpace(action.Content)[m
+[32m+[m	[32mif content != "" && !strings.EqualFold(content, "__NEED_WRITER__") {[m
+[32m+[m		[32mb.WriteString("Planner brief: ")[m
+[32m+[m		[32mb.WriteString(content)[m
+[32m+[m		[32mb.WriteString("\n")[m
+[32m+[m	[32m}[m
+[32m+[m	[32mif len(action.NextSteps) > 0 {[m
+[32m+[m		[32mb.WriteString("Must cover these points:\n")[m
+[32m+[m		[32mfor _, step := range action.NextSteps {[m
+[32m+[m			[32mstep = strings.TrimSpace(step)[m
+[32m+[m			[32mif step == "" {[m
+[32m+[m				[32mcontinue[m
+[32m+[m			[32m}[m
+[32m+[m			[32mb.WriteString("- ")[m
+[32m+[m			[32mb.WriteString(step)[m
+[32m+[m			[32mb.WriteString("\n")[m
+[32m+[m		[32m}[m
+[32m+[m	[32m}[m
+[32m+[m	[32mb.WriteString("Output plain text (not JSON).")[m
+[32m+[m	[32mreturn b.String()[m
+[32m+[m[32m}[m
+[32m+[m
+ type modelAction struct {[m
+ 	Type      string   `json:"type"`[m
+ 	Content   string   `json:"content,omitempty"`[m
+[1mdiff --git a/internal/app/app_test.go b/internal/app/app_test.go[m
+[1mindex 61563bb..73bc5be 100644[m
+[1m--- a/internal/app/app_test.go[m
+[1m+++ b/internal/app/app_test.go[m
+[36m@@ -3,6 +3,7 @@[m [mpackage app[m
+ import ([m
+ 	"context"[m
+ 	"errors"[m
+[32m+[m	[32m"io"[m
+ 	"os"[m
+ 	"path/filepath"[m
+ 	"strings"[m
+[36m@@ -33,6 +34,10 @@[m [mfunc (s *stubProvider) Chat(context.Context, llm.ChatRequest) (llm.ChatResponse,[m
+ 	return llm.ChatResponse{Content: out}, nil[m
+ }[m
+ [m
+[32m+[m[32mfunc (*stubProvider) ChatStream(context.Context, llm.ChatRequest) (llm.Stream, error) {[m
+[32m+[m	[32mreturn nil, io.EOF[m
+[32m+[m[32m}[m
+[32m+[m
+ type rateLimitThenSuccessProvider struct {[m
+ 	calls int[m
+ }[m
+[36m@@ -54,18 +59,30 @@[m [mfunc (p *rateLimitThenSuccessProvider) Chat(_ context.Context, req llm.ChatReque[m
+ 	return llm.ChatResponse{Content: `{"type":"final","content":"ok-after-fallback"}`}, nil[m
+ }[m
+ [m
+[32m+[m[32mfunc (*rateLimitThenSuccessProvider) ChatStream(context.Context, llm.ChatRequest) (llm.Stream, error) {[m
+[32m+[m	[32mreturn nil, io.EOF[m
+[32m+[m[32m}[m
+[32m+[m
+ type alwaysInvalidProvider struct{}[m
+ [m
+ func (alwaysInvalidProvider) Chat(context.Context, llm.ChatRequest) (llm.ChatResponse, error) {[m
+ 	return llm.ChatResponse{Content: "not a json object"}, nil[m
+ }[m
+ [m
+[32m+[m[32mfunc (alwaysInvalidProvider) ChatStream(context.Context, llm.ChatRequest) (llm.Stream, error) {[m
+[32m+[m	[32mreturn nil, io.EOF[m
+[32m+[m[32m}[m
+[32m+[m
+ type repeatToolProvider struct{}[m
+ [m
+ func (repeatToolProvider) Chat(context.Context, llm.ChatRequest) (llm.ChatResponse, error) {[m
+ 	return llm.ChatResponse{Content: `{"type":"tool_call","tool":{"name":"read","args":{"path":"a.txt"}}}`}, nil[m
+ }[m
+ [m
+[32m+[m[32mfunc (repeatToolProvider) ChatStream(context.Context, llm.ChatRequest) (llm.Stream, error) {[m
+[32m+[m	[32mreturn nil, io.EOF[m
+[32m+[m[32m}[m
+[32m+[m
+ type contextAwareProvider struct {[m
+ 	foundRetrievedContext bool[m
+ }[m
+[36m@@ -84,6 +101,10 @@[m [mfunc (p *contextAwareProvider) Chat(_ context.Context, req llm.ChatRequest) (llm[m
+ 	return llm.ChatResponse{Content: `{"type":"final","content":"ok-with-retrieval"}`}, nil[m
+ }[m
+ [m
+[32m+[m[32mfunc (*contextAwareProvider) ChatStream(context.Context, llm.ChatRequest) (llm.Stream, error) {[m
+[32m+[m	[32mreturn nil, io.EOF[m
+[32m+[m[32m}[m
+[32m+[m
+ type fixedRetriever struct {[m
+ 	value string[m
+ }[m
+[36m@@ -92,6 +113,63 @@[m [mfunc (r fixedRetriever) Retrieve(context.Context, string) (string, error) {[m
+ 	return r.value, nil[m
+ }[m
+ [m
+[32m+[m[32mtype continuationProvider struct {[m
+[32m+[m	[32mcalls int[m
+[32m+[m[32m}[m
+[32m+[m
+[32m+[m[32mfunc (p *continuationProvider) Chat(_ context.Context, req llm.ChatRequest) (llm.ChatResponse, error) {[m
+[32m+[m	[32mp.calls++[m
+[32m+[m	[32mif p.calls == 1 {[m
+[32m+[m		[32mreturn llm.ChatResponse{[m
+[32m+[m			[32mContent:      `{"type":"final","content":"continued`,[m
+[32m+[m			[32mFinishReason: "length",[m
+[32m+[m		[32m}, nil[m
+[32m+[m	[32m}[m
+[32m+[m	[32mlast := req.Messages[len(req.Messages)-1][m
+[32m+[m	[32mif last.Role != "user" || !strings.Contains(strings.ToLower(last.Content), "cut off") {[m
+[32m+[m		[32mreturn llm.ChatResponse{}, errors.New("missing continuation prompt")[m
+[32m+[m	[32m}[m
+[32m+[m	[32mreturn llm.ChatResponse{[m
+[32m+[m		[32mContent:      `-ok"}`,[m
+[32m+[m		[32mFinishReason: "stop",[m
+[32m+[m	[32m}, nil[m
+[32m+[m[32m}[m
+[32m+[m
+[32m+[m[32mfunc (*continuationProvider) ChatStream(context.Context, llm.ChatRequest) (llm.Stream, error) {[m
+[32m+[m	[32mreturn nil, io.EOF[m
+[32m+[m[32m}[m
+[32m+[m
+[32m+[m[32mtype plannerWriterProvider struct {[m
+[32m+[m	[32mcalls      int[m
+[32m+[m	[32mstreams    []bool[m
+[32m+[m	[32mmaxTokens  []int[m
+[32m+[m	[32mlastPrompt []llm.ChatMessage[m
+[32m+[m[32m}[m
+[32m+[m
+[32m+[m[32mfunc (p *plannerWriterProvider) Chat(_ context.Context, req llm.ChatRequest) (llm.ChatResponse, error) {[m
+[32m+[m	[32mp.calls++[m
+[32m+[m	[32mp.maxTokens = append(p.maxTokens, req.MaxTokens)[m
+[32m+[m	[32mstream := false[m
+[32m+[m	[32mif req.Stream != nil {[m
+[32m+[m		[32mstream = *req.Stream[m
+[32m+[m	[32m}[m
+[32m+[m	[32mp.streams = append(p.streams, stream)[m
+[32m+[m	[32mp.lastPrompt = append([]llm.ChatMessage(nil), req.Messages...)[m
+[32m+[m	[32mif p.calls == 1 {[m
+[32m+[m		[32mreturn llm.ChatResponse{[m
+[32m+[m			[32mContent: `{"type":"final","content":"__NEED_WRITER__","next_steps":["summarize findings","provide concrete next steps"]}`,[m
+[32m+[m		[32m}, nil[m
+[32m+[m	[32m}[m
+[32m+[m	[32mreturn llm.ChatResponse{[m
+[32m+[m		[32mContent:      "detailed final output",[m
+[32m+[m		[32mFinishReason: "stop",[m
+[32m+[m	[32m}, nil[m
+[32m+[m[32m}[m
+[32m+[m
+[32m+[m[32mfunc (*plannerWriterProvider) ChatStream(context.Context, llm.ChatRequest) (llm.Stream, error) {[m
+[32m+[m	[32mreturn nil, io.EOF[m
+[32m+[m[32m}[m
+[32m+[m
+ type fixedApprover bool[m
+ [m
+ func (f fixedApprover) Approve(context.Context, ApprovalPrompt) (bool, error) {[m
+[36m@@ -294,6 +372,99 @@[m [mfunc TestHandleTurnInjectsRetrievedContext(t *testing.T) {[m
+ 	}[m
+ }[m
+ [m
+[32m+[m[32mfunc TestHandleTurnAutoContinuationOnLength(t *testing.T) {[m
+[32m+[m	[32mp := &continuationProvider{}[m
+[32m+[m	[32ma, _ := setupTestApp(t, p)[m
+[32m+[m	[32mresp, err := a.HandleTurn(context.Background(), TurnRequest{[m
+[32m+[m		[32mInput: "return a final answer",[m
+[32m+[m		[32mAgent: "build",[m
+[32m+[m	[32m}, fixedApprover(true))[m
+[32m+[m	[32mif err != nil {[m
+[32m+[m		[32mt.Fatalf("handle turn failed: %v", err)[m
+[32m+[m	[32m}[m
+[32m+[m	[32mif resp.Output != "continued-ok" {[m
+[32m+[m		[32mt.Fatalf("unexpected output: %q", resp.Output)[m
+[32m+[m	[32m}[m
+[32m+[m	[32mif p.calls != 2 {[m
+[32m+[m		[32mt.Fatalf("expected 2 provider calls, got %d", p.calls)[m
+[32m+[m	[32m}[m
+[32m+[m[32m}[m
+[32m+[m
+[32m+[m[32mfunc TestAdaptiveMaxTokens(t *testing.T) {[m
+[32m+[m	[32mmsgs := []llm.ChatMessage{[m
+[32m+[m		[32m{Role: "system", Content: strings.Repeat("x", 200)},[m
+[32m+[m		[32m{Role: "user", Content: strings.Repeat("y", 200)},[m
+[32m+[m	[32m}[m
+[32m+[m	[32mgotPlan := adaptiveMaxTokens(agent.Definition{Name: "plan", MaxTokens: 6000}, msgs)[m
+[32m+[m	[32mif gotPlan != 2048 {[m
+[32m+[m		[32mt.Fatalf("expected plan cap 2048, got %d", gotPlan)[m
+[32m+[m	[32m}[m
+[32m+[m
+[32m+[m	[32mlongMsgs := []llm.ChatMessage{[m
+[32m+[m		[32m{Role: "system", Content: strings.Repeat("x", 120000)},[m
+[32m+[m	[32m}[m
+[32m+[m	[32mgotLong := adaptiveMaxTokens(agent.Definition{Name: "build", MaxTokens: 16000}, longMsgs)[m
+[32m+[m	[32mif gotLong != 4096 {[m
+[32m+[m		[32mt.Fatalf("expected long prompt cap 4096, got %d", gotLong)[m
+[32m+[m	[32m}[m
+[32m+[m
+[32m+[m	[32mgotKeep := adaptiveMaxTokens(agent.Definition{Name: "build", MaxTokens: 7000}, msgs)[m
+[32m+[m	[32mif gotKeep != 7000 {[m
+[32m+[m		[32mt.Fatalf("expected keep 7000, got %d", gotKeep)[m
+[32m+[m	[32m}[m
+[32m+[m[32m}[m
+[32m+[m
+[32m+[m[32mfunc TestHandleTurnEmitsEvents(t *testing.T) {[m
+[32m+[m	[32mp := &stubProvider{[m
+[32m+[m		[32mresponses: []string{[m
+[32m+[m			[32m`{"type":"tool_call","tool":{"name":"read","args":{"path":"a.txt"}}}`,[m
+[32m+[m			[32m`{"type":"final","content":"done"}`,[m
+[32m+[m		[32m},[m
+[32m+[m	[32m}[m
+[32m+[m	[32ma, _ := setupTestApp(t, p)[m
+[32m+[m	[32mvar events []Event[m
+[32m+[m	[32mctx := WithEventHandler(context.Background(), func(ev Event) {[m
+[32m+[m		[32mevents = append(events, ev)[m
+[32m+[m	[32m})[m
+[32m+[m	[32m_, err := a.HandleTurn(ctx, TurnRequest{[m
+[32m+[m		[32mInput: "read a file",[m
+[32m+[m		[32mAgent: "build",[m
+[32m+[m	[32m}, fixedApprover(true))[m
+[32m+[m	[32mif err != nil {[m
+[32m+[m		[32mt.Fatalf("handle turn failed: %v", err)[m
+[32m+[m	[32m}[m
+[32m+[m	[32mif len(events) == 0 {[m
+[32m+[m		[32mt.Fatalf("expected emitted events")[m
+[32m+[m	[32m}[m
+[32m+[m[32m}[m
+[32m+[m
+[32m+[m[32mfunc TestHandleTurnUsesPlannerThenWriter(t *testing.T) {[m
+[32m+[m	[32mp := &plannerWriterProvider{}[m
+[32m+[m	[32ma, _ := setupTestApp(t, p)[m
+[32m+[m	[32mresp, err := a.HandleTurn(context.Background(), TurnRequest{[m
+[32m+[m		[32mInput: "give detailed output",[m
+[32m+[m		[32mAgent: "build",[m
+[32m+[m	[32m}, fixedApprover(true))[m
+[32m+[m	[32mif err != nil {[m
+[32m+[m		[32mt.Fatalf("handle turn failed: %v", err)[m
+[32m+[m	[32m}[m
+[32m+[m	[32mif resp.Output != "detailed final output" {[m
+[32m+[m		[32mt.Fatalf("unexpected output: %q", resp.Output)[m
+[32m+[m	[32m}[m
+[32m+[m	[32mif p.calls != 2 {[m
+[32m+[m		[32mt.Fatalf("expected 2 llm calls, got %d", p.calls)[m
+[32m+[m	[32m}[m
+[32m+[m	[32mif len(p.streams) < 2 || p.streams[0] {[m
+[32m+[m		[32mt.Fatalf("expected planner call to be non-stream")[m
+[32m+[m	[32m}[m
+[32m+[m	[32mif !p.streams[1] {[m
+[32m+[m		[32mt.Fatalf("expected writer call to be stream")[m
+[32m+[m	[32m}[m
+[32m+[m	[32mif p.maxTokens[0] > plannerTokenCap {[m
+[32m+[m		[32mt.Fatalf("expected planner max_tokens <= %d, got %d", plannerTokenCap, p.maxTokens[0])[m
+[32m+[m	[32m}[m
+[32m+[m[32m}[m
+[32m+[m
+ func osWrite(path, content string) error {[m
+ 	return os.WriteFile(path, []byte(content), 0o644)[m
+ }[m
+[1mdiff --git a/internal/config/config.go b/internal/config/config.go[m
+[1mindex bfe9a73..2696788 100644[m
+[1m--- a/internal/config/config.go[m
+[1m+++ b/internal/config/config.go[m
+[36m@@ -37,6 +37,7 @@[m [mtype fileConfig struct {[m
+ 	EmbeddingOverlap  *int                   `yaml:"embedding_chunk_overlap"`[m
+ 	EmbeddingBatch    int                    `yaml:"embedding_batch_size"`[m
+ 	EmbeddingMaxCtx   int                    `yaml:"embedding_max_context_chars"`[m
+[32m+[m	[32mEmbeddingIgnore   []string               `yaml:"embedding_ignore_dirs"`[m
+ 	EmbeddingInitTime string                 `yaml:"embedding_init_timeout"`[m
+ 	CompactionTurns   int                    `yaml:"compaction_turns"`[m
+ 	CompactionTokens  int                    `yaml:"compaction_token_threshold"`[m
+[36m@@ -70,6 +71,7 @@[m [mtype Config struct {[m
+ 	EmbeddingOverlap  int[m
+ 	EmbeddingBatch    int[m
+ 	EmbeddingMaxCtx   int[m
+[32m+[m	[32mEmbeddingIgnore   []string[m
+ 	EmbeddingInitTime time.Duration[m
+ 	CompactionTurns   int[m
+ 	CompactionTokens  int[m
+[36m@@ -125,20 +127,29 @@[m [mfunc defaultConfig() Config {[m
+ 				MaxTokens:   1400,[m
+ 			},[m
+ 		},[m
+[31m-		DefaultAgent:      "build",[m
+[31m-		WorkspaceRoot:     workspace,[m
+[31m-		RulesFile:         filepath.Join(workspace, "AGENTS.md"),[m
+[31m-		StoragePath:       filepath.Join(workspace, "data", "agent.db"),[m
+[31m-		EmbeddingEnabled:  false,[m
+[31m-		EmbeddingBaseURL:  "http://localhost:8001",[m
+[31m-		EmbeddingModel:    "nvidia/llama-3.2-nv-embedqa-1b-v2",[m
+[31m-		EmbeddingIndex:    filepath.Join(workspace, "data", "embed-index.jsonl"),[m
+[31m-		EmbeddingTopK:     12,[m
+[31m-		EmbeddingPerFile:  3,[m
+[31m-		EmbeddingChunk:    260,[m
+[31m-		EmbeddingOverlap:  50,[m
+[31m-		EmbeddingBatch:    12,[m
+[31m-		EmbeddingMaxCtx:   28000,[m
+[32m+[m		[32mDefaultAgent:     "build",[m
+[32m+[m		[32mWorkspaceRoot:    workspace,[m
+[32m+[m		[32mRulesFile:        filepath.Join(workspace, "AGENTS.md"),[m
+[32m+[m		[32mStoragePath:      filepath.Join(workspace, "data", "agent.db"),[m
+[32m+[m		[32mEmbeddingEnabled: false,[m
+[32m+[m		[32mEmbeddingBaseURL: "http://localhost:8001",[m
+[32m+[m		[32mEmbeddingModel:   "nvidia/llama-3.2-nv-embedqa-1b-v2",[m
+[32m+[m		[32mEmbeddingIndex:   filepath.Join(workspace, "data", "embed-index.jsonl"),[m
+[32m+[m		[32mEmbeddingTopK:    12,[m
+[32m+[m		[32mEmbeddingPerFile: 3,[m
+[32m+[m		[32mEmbeddingChunk:   260,[m
+[32m+[m		[32mEmbeddingOverlap: 50,[m
+[32m+[m		[32mEmbeddingBatch:   12,[m
+[32m+[m		[32mEmbeddingMaxCtx:  28000,[m
+[32m+[m		[32mEmbeddingIgnore: []string{[m
+[32m+[m			[32m".git",[m
+[32m+[m			[32m".run",[m
+[32m+[m			[32m"node_modules",[m
+[32m+[m			[32m"dist",[m
+[32m+[m			[32m"build",[m
+[32m+[m			[32m"vendor",[m
+[32m+[m			[32m"bin",[m
+[32m+[m		[32m},[m
+ 		EmbeddingInitTime: 8 * time.Minute,[m
+ 		CompactionTurns:   30,[m
+ 		CompactionTokens:  12000,[m
+[36m@@ -219,6 +230,9 @@[m [mfunc applyYAMLConfig(cfg *Config, path string) error {[m
+ 	if fc.EmbeddingMaxCtx > 0 {[m
+ 		cfg.EmbeddingMaxCtx = fc.EmbeddingMaxCtx[m
+ 	}[m
+[32m+[m	[32mif len(fc.EmbeddingIgnore) > 0 {[m
+[32m+[m		[32mcfg.EmbeddingIgnore = append([]string(nil), fc.EmbeddingIgnore...)[m
+[32m+[m	[32m}[m
+ 	if v := strings.TrimSpace(fc.EmbeddingInitTime); v != "" {[m
+ 		d, err := time.ParseDuration(v)[m
+ 		if err != nil {[m
+[36m@@ -377,6 +391,20 @@[m [mfunc applyEnvOverrides(cfg *Config) {[m
+ 			cfg.EmbeddingMaxCtx = n[m
+ 		}[m
+ 	}[m
+[32m+[m	[32mif v := strings.TrimSpace(os.Getenv("EMBEDDING_IGNORE_DIRS")); v != "" {[m
+[32m+[m		[32mparts := strings.Split(v, ",")[m
+[32m+[m		[32mitems := make([]string, 0, len(parts))[m
+[32m+[m		[32mfor _, p := range parts {[m
+[32m+[m			[32mp = strings.TrimSpace(p)[m
+[32m+[m			[32mif p == "" {[m
+[32m+[m				[32mcontinue[m
+[32m+[m			[32m}[m
+[32m+[m			[32mitems = append(items, p)[m
+[32m+[m		[32m}[m
+[32m+[m		[32mif len(items) > 0 {[m
+[32m+[m			[32mcfg.EmbeddingIgnore = items[m
+[32m+[m		[32m}[m
+[32m+[m	[32m}[m
+ 	if v := strings.TrimSpace(os.Getenv("EMBEDDING_INIT_TIMEOUT")); v != "" {[m
+ 		if d, err := time.ParseDuration(v); err == nil && d >= 0 {[m
+ 			cfg.EmbeddingInitTime = d[m
+[36m@@ -458,6 +486,10 @@[m [mfunc normalizeAndValidate(cfg *Config) error {[m
+ 	if cfg.EmbeddingMaxCtx <= 0 {[m
+ 		cfg.EmbeddingMaxCtx = 28000[m
+ 	}[m
+[32m+[m	[32mcfg.EmbeddingIgnore = normalizeStringList(cfg.EmbeddingIgnore)[m
+[32m+[m	[32mif len(cfg.EmbeddingIgnore) == 0 {[m
+[32m+[m		[32mcfg.EmbeddingIgnore = []string{".git", ".run", "node_modules", "dist", "build", "vendor", "bin"}[m
+[32m+[m	[32m}[m
+ 	if cfg.EmbeddingInitTime < 0 {[m
+ 		cfg.EmbeddingInitTime = 0[m
+ 	}[m
+[36m@@ -558,3 +590,20 @@[m [mfunc loadDotEnv(path string) error {[m
+ 	}[m
+ 	return nil[m
+ }[m
+[32m+[m
+[32m+[m[32mfunc normalizeStringList(in []string) []string {[m
+[32m+[m	[32mseen := map[string]struct{}{}[m
+[32m+[m	[32mout := make([]string, 0, len(in))[m
+[32m+[m	[32mfor _, item := range in {[m
+[32m+[m		[32mitem = strings.TrimSpace(item)[m
+[32m+[m		[32mif item == "" {[m
+[32m+[m			[32mcontinue[m
+[32m+[m		[32m}[m
+[32m+[m		[32mif _, ok := seen[item]; ok {[m
+[32m+[m			[32mcontinue[m
+[32m+[m		[32m}[m
+[32m+[m		[32mseen[item] = struct{}{}[m
+[32m+[m		[32mout = append(out, item)[m
+[32m+[m	[32m}[m
+[32m+[m	[32mreturn out[m
+[32m+[m[32m}[m
+[1mdiff --git a/internal/llm/nvidia.go b/internal/llm/nvidia.go[m
+[1mindex 4710069..65e0887 100644[m
+[1m--- a/internal/llm/nvidia.go[m
+[1m+++ b/internal/llm/nvidia.go[m
+[36m@@ -25,6 +25,12 @@[m [mtype NVIDIAProvider struct {[m
+ 	clearThinking  bool[m
+ }[m
+ [m
+[32m+[m[32mtype nvidiaStream struct {[m
+[32m+[m	[32mbody    io.ReadCloser[m
+[32m+[m	[32mscanner *bufio.Scanner[m
+[32m+[m	[32mclosed  bool[m
+[32m+[m[32m}[m
+[32m+[m
+ func NewNVIDIAProvider([m
+ 	baseURL string,[m
+ 	apiKey string,[m
+[36m@@ -69,30 +75,11 @@[m [mfunc (p *NVIDIAProvider) Chat(ctx context.Context, req ChatRequest) (ChatRespons[m
+ 		req.MaxTokens = 1200[m
+ 	}[m
+ [m
+[31m-	payload := map[string]any{[m
+[31m-		"model":       req.Model,[m
+[31m-		"messages":    req.Messages,[m
+[31m-		"temperature": req.Temperature,[m
+[31m-		"top_p":       1,[m
+[31m-		"max_tokens":  req.MaxTokens,[m
+[31m-	}[m
+ 	stream := p.stream[m
+ 	if req.Stream != nil {[m
+ 		stream = *req.Stream[m
+ 	}[m
+[31m-	enableThinking := p.enableThinking[m
+[31m-	if req.EnableThinking != nil {[m
+[31m-		enableThinking = *req.EnableThinking[m
+[31m-	}[m
+[31m-	clearThinking := p.clearThinking[m
+[31m-	if req.ClearThinking != nil {[m
+[31m-		clearThinking = *req.ClearThinking[m
+[31m-	}[m
+[31m-	payload["stream"] = stream[m
+[31m-	payload["chat_template_kwargs"] = map[string]any{[m
+[31m-		"enable_thinking": enableThinking,[m
+[31m-		"clear_thinking":  clearThinking,[m
+[31m-	}[m
+[32m+[m	[32mpayload := p.buildPayload(req, stream)[m
+ 	rawBody, err := json.Marshal(payload)[m
+ 	if err != nil {[m
+ 		return ChatResponse{}, err[m
+[36m@@ -164,7 +151,8 @@[m [mfunc (p *NVIDIAProvider) Chat(ctx context.Context, req ChatRequest) (ChatRespons[m
+ 			return ChatResponse{}, fmt.Errorf("chat request HTTP %d: %s", resp.StatusCode, string(body))[m
+ 		}[m
+ [m
+[31m-		out, parseErr := parseResponse(resp.Body, stream)[m
+[32m+[m		[32mdeltaHandler := streamHandlerFromContext(ctx)[m
+[32m+[m		[32mout, parseErr := parseResponse(resp.Body, stream, deltaHandler)[m
+ 		_ = resp.Body.Close()[m
+ 		if parseErr == nil {[m
+ 			if cancel != nil {[m
+[36m@@ -192,13 +180,80 @@[m [mfunc (p *NVIDIAProvider) Chat(ctx context.Context, req ChatRequest) (ChatRespons[m
+ 	}[m
+ }[m
+ [m
+[31m-func parseResponse(body io.Reader, stream bool) (ChatResponse, error) {[m
+[32m+[m[32mfunc (p *NVIDIAProvider) ChatStream(ctx context.Context, req ChatRequest) (Stream, error) {[m
+[32m+[m	[32mif p.apiKey == "" {[m
+[32m+[m		[32mreturn nil, errors.New("NVIDIA_API_KEY is required")[m
+[32m+[m	[32m}[m
+[32m+[m	[32mif req.Model == "" {[m
+[32m+[m		[32mreturn nil, errors.New("model is required")[m
+[32m+[m	[32m}[m
+[32m+[m	[32mif len(req.Messages) == 0 {[m
+[32m+[m		[32mreturn nil, errors.New("messages cannot be empty")[m
+[32m+[m	[32m}[m
+[32m+[m	[32mif req.MaxTokens <= 0 {[m
+[32m+[m		[32mreq.MaxTokens = 1200[m
+[32m+[m	[32m}[m
+[32m+[m
+[32m+[m	[32mpayload := p.buildPayload(req, true)[m
+[32m+[m	[32mrawBody, err := json.Marshal(payload)[m
+[32m+[m	[32mif err != nil {[m
+[32m+[m		[32mreturn nil, err[m
+[32m+[m	[32m}[m
+[32m+[m	[32mhttpReq, err := http.NewRequestWithContext(ctx, http.MethodPost, p.baseURL+"/chat/completions", bytes.NewReader(rawBody))[m
+[32m+[m	[32mif err != nil {[m
+[32m+[m		[32mreturn nil, err[m
+[32m+[m	[32m}[m
+[32m+[m	[32mhttpReq.Header.Set("Authorization", "Bearer "+p.apiKey)[m
+[32m+[m	[32mhttpReq.Header.Set("Content-Type", "application/json")[m
+[32m+[m	[32mhttpReq.Header.Set("Accept", "text/event-stream")[m
+[32m+[m
+[32m+[m	[32mresp, err := p.httpClient.Do(httpReq)[m
+[32m+[m	[32mif err != nil {[m
+[32m+[m		[32mreturn nil, fmt.Errorf("chat stream request failed: %w", err)[m
+[32m+[m	[32m}[m
+[32m+[m	[32mif resp.StatusCode < 200 || resp.StatusCode >= 300 {[m
+[32m+[m		[32mbody, _ := io.ReadAll(io.LimitReader(resp.Body, 8*1024*1024))[m
+[32m+[m		[32m_ = resp.Body.Close()[m
+[32m+[m		[32mreturn nil, fmt.Errorf("chat stream request HTTP %d: %s", resp.StatusCode, strings.TrimSpace(string(body)))[m
+[32m+[m	[32m}[m
+[32m+[m	[32msc := bufio.NewScanner(resp.Body)[m
+[32m+[m	[32msc.Buffer(make([]byte, 0, 64*1024), 8*1024*1024)[m
+[32m+[m	[32mreturn &nvidiaStream{[m
+[32m+[m		[32mbody:    resp.Body,[m
+[32m+[m		[32mscanner: sc,[m
+[32m+[m	[32m}, nil[m
+[32m+[m[32m}[m
+[32m+[m
+[32m+[m[32mfunc parseResponse(body io.Reader, stream bool, deltaHandler StreamHandler) (ChatResponse, error) {[m
+ 	if stream {[m
+[31m-		return parseStreamResponse(body)[m
+[32m+[m		[32mreturn parseStreamResponse(body, deltaHandler)[m
+ 	}[m
+ 	return parseJSONResponse(body)[m
+ }[m
+ [m
+[32m+[m[32mfunc (p *NVIDIAProvider) buildPayload(req ChatRequest, stream bool) map[string]any {[m
+[32m+[m	[32menableThinking := p.enableThinking[m
+[32m+[m	[32mif req.EnableThinking != nil {[m
+[32m+[m		[32menableThinking = *req.EnableThinking[m
+[32m+[m	[32m}[m
+[32m+[m	[32mclearThinking := p.clearThinking[m
+[32m+[m	[32mif req.ClearThinking != nil {[m
+[32m+[m		[32mclearThinking = *req.ClearThinking[m
+[32m+[m	[32m}[m
+[32m+[m	[32mreturn map[string]any{[m
+[32m+[m		[32m"model":       req.Model,[m
+[32m+[m		[32m"messages":    req.Messages,[m
+[32m+[m		[32m"temperature": req.Temperature,[m
+[32m+[m		[32m"top_p":       1,[m
+[32m+[m		[32m"max_tokens":  req.MaxTokens,[m
+[32m+[m		[32m"stream":      stream,[m
+[32m+[m		[32m"chat_template_kwargs": map[string]any{[m
+[32m+[m			[32m"enable_thinking": enableThinking,[m
+[32m+[m			[32m"clear_thinking":  clearThinking,[m
+[32m+[m		[32m},[m
+[32m+[m	[32m}[m
+[32m+[m[32m}[m
+[32m+[m
+ func parseJSONResponse(body io.Reader) (ChatResponse, error) {[m
+ 	raw, err := io.ReadAll(io.LimitReader(body, 8*1024*1024))[m
+ 	if err != nil {[m
+[36m@@ -210,6 +265,7 @@[m [mfunc parseJSONResponse(body io.Reader) (ChatResponse, error) {[m
+ 				Content          any    `json:"content"`[m
+ 				ReasoningContent string `json:"reasoning_content"`[m
+ 			} `json:"message"`[m
+[32m+[m			[32mFinishReason string `json:"finish_reason"`[m
+ 		} `json:"choices"`[m
+ 	}[m
+ 	if err := json.Unmarshal(raw, &parsed); err != nil {[m
+[36m@@ -219,17 +275,19 @@[m [mfunc parseJSONResponse(body io.Reader) (ChatResponse, error) {[m
+ 		return ChatResponse{}, errors.New("empty chat choices")[m
+ 	}[m
+ 	return ChatResponse{[m
+[31m-		Content:   coerceContent(parsed.Choices[0].Message.Content),[m
+[31m-		Reasoning: strings.TrimSpace(parsed.Choices[0].Message.ReasoningContent),[m
+[32m+[m		[32mContent:      coerceContent(parsed.Choices[0].Message.Content),[m
+[32m+[m		[32mReasoning:    strings.TrimSpace(parsed.Choices[0].Message.ReasoningContent),[m
+[32m+[m		[32mFinishReason: strings.TrimSpace(parsed.Choices[0].FinishReason),[m
+ 	}, nil[m
+ }[m
+ [m
+[31m-func parseStreamResponse(body io.Reader) (ChatResponse, error) {[m
+[32m+[m[32mfunc parseStreamResponse(body io.Reader, deltaHandler StreamHandler) (ChatResponse, error) {[m
+ 	scanner := bufio.NewScanner(body)[m
+ 	scanner.Buffer(make([]byte, 0, 64*1024), 8*1024*1024)[m
+ [m
+ 	var content strings.Builder[m
+ 	var reasoning strings.Builder[m
+[32m+[m	[32mfinishReason := ""[m
+ [m
+ 	for scanner.Scan() {[m
+ 		line := strings.TrimSpace(scanner.Text())[m
+[36m@@ -250,6 +308,7 @@[m [mfunc parseStreamResponse(body io.Reader) (ChatResponse, error) {[m
+ 					Content          string `json:"content"`[m
+ 					ReasoningContent string `json:"reasoning_content"`[m
+ 				} `json:"delta"`[m
+[32m+[m				[32mFinishReason string `json:"finish_reason"`[m
+ 			} `json:"choices"`[m
+ 		}[m
+ 		if err := json.Unmarshal([]byte(data), &chunk); err != nil {[m
+[36m@@ -258,11 +317,22 @@[m [mfunc parseStreamResponse(body io.Reader) (ChatResponse, error) {[m
+ 		if len(chunk.Choices) == 0 {[m
+ 			continue[m
+ 		}[m
+[31m-		if chunk.Choices[0].Delta.ReasoningContent != "" {[m
+[31m-			reasoning.WriteString(chunk.Choices[0].Delta.ReasoningContent)[m
+[32m+[m		[32mdeltaReasoning := chunk.Choices[0].Delta.ReasoningContent[m
+[32m+[m		[32mdeltaContent := chunk.Choices[0].Delta.Content[m
+[32m+[m		[32mif fr := strings.TrimSpace(chunk.Choices[0].FinishReason); fr != "" {[m
+[32m+[m			[32mfinishReason = fr[m
+ 		}[m
+[31m-		if chunk.Choices[0].Delta.Content != "" {[m
+[31m-			content.WriteString(chunk.Choices[0].Delta.Content)[m
+[32m+[m		[32mif deltaReasoning != "" {[m
+[32m+[m			[32mreasoning.WriteString(deltaReasoning)[m
+[32m+[m		[32m}[m
+[32m+[m		[32mif deltaContent != "" {[m
+[32m+[m			[32mcontent.WriteString(deltaContent)[m
+[32m+[m		[32m}[m
+[32m+[m		[32mif deltaHandler != nil && (deltaContent != "" || deltaReasoning != "") {[m
+[32m+[m			[32mdeltaHandler(StreamDelta{[m
+[32m+[m				[32mContent:   deltaContent,[m
+[32m+[m				[32mReasoning: deltaReasoning,[m
+[32m+[m			[32m})[m
+ 		}[m
+ 	}[m
+ 	if err := scanner.Err(); err != nil {[m
+[36m@@ -272,8 +342,9 @@[m [mfunc parseStreamResponse(body io.Reader) (ChatResponse, error) {[m
+ 		return ChatResponse{}, errors.New("empty stream response")[m
+ 	}[m
+ 	return ChatResponse{[m
+[31m-		Content:   content.String(),[m
+[31m-		Reasoning: reasoning.String(),[m
+[32m+[m		[32mContent:      content.String(),[m
+[32m+[m		[32mReasoning:    reasoning.String(),[m
+[32m+[m		[32mFinishReason: finishReason,[m
+ 	}, nil[m
+ }[m
+ [m
+[36m@@ -372,3 +443,59 @@[m [mfunc coerceContent(v any) string {[m
+ 		return ""[m
+ 	}[m
+ }[m
+[32m+[m
+[32m+[m[32mfunc (s *nvidiaStream) Recv() (*StreamEvent, error) {[m
+[32m+[m	[32mif s == nil || s.scanner == nil {[m
+[32m+[m		[32mreturn nil, io.EOF[m
+[32m+[m	[32m}[m
+[32m+[m	[32mfor s.scanner.Scan() {[m
+[32m+[m		[32mline := strings.TrimSpace(s.scanner.Text())[m
+[32m+[m		[32mif !strings.HasPrefix(line, "data:") {[m
+[32m+[m			[32mcontinue[m
+[32m+[m		[32m}[m
+[32m+[m		[32mdata := strings.TrimSpace(strings.TrimPrefix(line, "data:"))[m
+[32m+[m		[32mif data == "" {[m
+[32m+[m			[32mcontinue[m
+[32m+[m		[32m}[m
+[32m+[m		[32mif data == "[DONE]" {[m
+[32m+[m			[32mreturn nil, io.EOF[m
+[32m+[m		[32m}[m
+[32m+[m
+[32m+[m		[32mvar chunk struct {[m
+[32m+[m			[32mChoices []struct {[m
+[32m+[m				[32mDelta struct {[m
+[32m+[m					[32mContent          string `json:"content"`[m
+[32m+[m					[32mReasoningContent string `json:"reasoning_content"`[m
+[32m+[m				[32m} `json:"delta"`[m
+[32m+[m				[32mFinishReason string `json:"finish_reason"`[m
+[32m+[m			[32m} `json:"choices"`[m
+[32m+[m		[32m}[m
+[32m+[m		[32mif err := json.Unmarshal([]byte(data), &chunk); err != nil {[m
+[32m+[m			[32mreturn &StreamEvent{Type: "error", Text: err.Error()}, nil[m
+[32m+[m		[32m}[m
+[32m+[m		[32mif len(chunk.Choices) == 0 {[m
+[32m+[m			[32mcontinue[m
+[32m+[m		[32m}[m
+[32m+[m		[32mif fr := strings.TrimSpace(chunk.Choices[0].FinishReason); fr != "" {[m
+[32m+[m			[32mreturn &StreamEvent{Type: "meta", Text: "finish_reason=" + fr}, nil[m
+[32m+[m		[32m}[m
+[32m+[m		[32mif reasoning := chunk.Choices[0].Delta.ReasoningContent; reasoning != "" {[m
+[32m+[m			[32mreturn &StreamEvent{Type: "delta", Text: reasoning}, nil[m
+[32m+[m		[32m}[m
+[32m+[m		[32mif content := chunk.Choices[0].Delta.Content; content != "" {[m
+[32m+[m			[32mreturn &StreamEvent{Type: "delta", Text: content}, nil[m
+[32m+[m		[32m}[m
+[32m+[m	[32m}[m
+[32m+[m	[32mif err := s.scanner.Err(); err != nil {[m
+[32m+[m		[32mreturn nil, err[m
+[32m+[m	[32m}[m
+[32m+[m	[32mreturn nil, io.EOF[m
+[32m+[m[32m}[m
+[32m+[m
+[32m+[m[32mfunc (s *nvidiaStream) Close() error {[m
+[32m+[m	[32mif s == nil || s.closed || s.body == nil {[m
+[32m+[m		[32mreturn nil[m
+[32m+[m	[32m}[m
+[32m+[m	[32ms.closed = true[m
+[32m+[m	[32mreturn s.body.Close()[m
+[32m+[m[32m}[m
+[1mdiff --git a/internal/llm/nvidia_test.go b/internal/llm/nvidia_test.go[m
+[1mindex e67788c..bad9472 100644[m
+[1m--- a/internal/llm/nvidia_test.go[m
+[1m+++ b/internal/llm/nvidia_test.go[m
+[36m@@ -6,6 +6,7 @@[m [mimport ([m
+ 	"io"[m
+ 	"net/http"[m
+ 	"net/http/httptest"[m
+[32m+[m	[32m"strings"[m
+ 	"sync/atomic"[m
+ 	"testing"[m
+ 	"time"[m
+[36m@@ -156,3 +157,130 @@[m [mfunc TestNVIDIAProviderStreamNotBoundByRequestTimeout(t *testing.T) {[m
+ 		t.Fatalf("unexpected content: %q", resp.Content)[m
+ 	}[m
+ }[m
+[32m+[m
+[32m+[m[32mfunc TestNVIDIAProviderStreamDeltaCallback(t *testing.T) {[m
+[32m+[m	[32msrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {[m
+[32m+[m		[32mw.Header().Set("Content-Type", "text/event-stream")[m
+[32m+[m		[32m_, _ = w.Write([]byte("data: {\"choices\":[{\"delta\":{\"reasoning_content\":\"thinking \"}}]}\n\n"))[m
+[32m+[m		[32m_, _ = w.Write([]byte("data: {\"choices\":[{\"delta\":{\"content\":\"hello\"}}]}\n\n"))[m
+[32m+[m		[32m_, _ = w.Write([]byte("data: {\"choices\":[{\"delta\":{\"content\":\" world\"}}]}\n\n"))[m
+[32m+[m		[32m_, _ = w.Write([]byte("data: [DONE]\n\n"))[m
+[32m+[m	[32m}))[m
+[32m+[m	[32mdefer srv.Close()[m
+[32m+[m
+[32m+[m	[32mp := NewNVIDIAProvider(srv.URL, "test-key", 5*time.Second, 0, true, true, false)[m
+[32m+[m	[32mvar gotContent strings.Builder[m
+[32m+[m	[32mvar gotReasoning strings.Builder[m
+[32m+[m	[32mctx := WithStreamHandler(context.Background(), func(delta StreamDelta) {[m
+[32m+[m		[32mgotContent.WriteString(delta.Content)[m
+[32m+[m		[32mgotReasoning.WriteString(delta.Reasoning)[m
+[32m+[m	[32m})[m
+[32m+[m	[32mresp, err := p.Chat(ctx, ChatRequest{[m
+[32m+[m		[32mModel:       "z-ai/glm5",[m
+[32m+[m		[32mMessages:    []ChatMessage{{Role: "user", Content: "hi"}},[m
+[32m+[m		[32mTemperature: 0.1,[m
+[32m+[m		[32mMaxTokens:   256,[m
+[32m+[m	[32m})[m
+[32m+[m	[32mif err != nil {[m
+[32m+[m		[32mt.Fatalf("chat failed: %v", err)[m
+[32m+[m	[32m}[m
+[32m+[m	[32mif gotContent.String() != "hello world" {[m
+[32m+[m		[32mt.Fatalf("unexpected callback content: %q", gotContent.String())[m
+[32m+[m	[32m}[m
+[32m+[m	[32mif gotReasoning.String() != "thinking " {[m
+[32m+[m		[32mt.Fatalf("unexpected callback reasoning: %q", gotReasoning.String())[m
+[32m+[m	[32m}[m
+[32m+[m	[32mif resp.Content != "hello world" {[m
+[32m+[m		[32mt.Fatalf("unexpected content: %q", resp.Content)[m
+[32m+[m	[32m}[m
+[32m+[m[32m}[m
+[32m+[m
+[32m+[m[32mfunc TestNVIDIAProviderFinishReasonJSON(t *testing.T) {[m
+[32m+[m	[32msrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {[m
+[32m+[m		[32mw.Header().Set("Content-Type", "application/json")[m
+[32m+[m		[32m_, _ = w.Write([]byte(`{"choices":[{"finish_reason":"length","message":{"content":"x"}}]}`))[m
+[32m+[m	[32m}))[m
+[32m+[m	[32mdefer srv.Close()[m
+[32m+[m
+[32m+[m	[32mp := NewNVIDIAProvider(srv.URL, "test-key", 5*time.Second, 0, false, true, false)[m
+[32m+[m	[32mresp, err := p.Chat(context.Background(), ChatRequest{[m
+[32m+[m		[32mModel:       "z-ai/glm5",[m
+[32m+[m		[32mMessages:    []ChatMessage{{Role: "user", Content: "hi"}},[m
+[32m+[m		[32mTemperature: 0.1,[m
+[32m+[m		[32mMaxTokens:   64,[m
+[32m+[m	[32m})[m
+[32m+[m	[32mif err != nil {[m
+[32m+[m		[32mt.Fatalf("chat failed: %v", err)[m
+[32m+[m	[32m}[m
+[32m+[m	[32mif resp.FinishReason != "length" {[m
+[32m+[m		[32mt.Fatalf("unexpected finish_reason: %q", resp.FinishReason)[m
+[32m+[m	[32m}[m
+[32m+[m[32m}[m
+[32m+[m
+[32m+[m[32mfunc TestNVIDIAProviderFinishReasonStream(t *testing.T) {[m
+[32m+[m	[32msrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {[m
+[32m+[m		[32mw.Header().Set("Content-Type", "text/event-stream")[m
+[32m+[m		[32m_, _ = w.Write([]byte("data: {\"choices\":[{\"delta\":{\"content\":\"ok\"}}]}\n\n"))[m
+[32m+[m		[32m_, _ = w.Write([]byte("data: {\"choices\":[{\"delta\":{},\"finish_reason\":\"stop\"}]}\n\n"))[m
+[32m+[m		[32m_, _ = w.Write([]byte("data: [DONE]\n\n"))[m
+[32m+[m	[32m}))[m
+[32m+[m	[32mdefer srv.Close()[m
+[32m+[m
+[32m+[m	[32mp := NewNVIDIAProvider(srv.URL, "test-key", 5*time.Second, 0, true, true, false)[m
+[32m+[m	[32mresp, err := p.Chat(context.Background(), ChatRequest{[m
+[32m+[m		[32mModel:       "z-ai/glm5",[m
+[32m+[m		[32mMessages:    []ChatMessage{{Role: "user", Content: "hi"}},[m
+[32m+[m		[32mTemperature: 0.1,[m
+[32m+[m		[32mMaxTokens:   64,[m
+[32m+[m	[32m})[m
+[32m+[m	[32mif err != nil {[m
+[32m+[m		[32mt.Fatalf("chat failed: %v", err)[m
+[32m+[m	[32m}[m
+[32m+[m	[32mif resp.FinishReason != "stop" {[m
+[32m+[m		[32mt.Fatalf("unexpected finish_reason: %q", resp.FinishReason)[m
+[32m+[m	[32m}[m
+[32m+[m[32m}[m
+[32m+[m
+[32m+[m[32mfunc TestNVIDIAProviderChatStream(t *testing.T) {[m
+[32m+[m	[32msrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {[m
+[32m+[m		[32mw.Header().Set("Content-Type", "text/event-stream")[m
+[32m+[m		[32m_, _ = w.Write([]byte("data: {\"choices\":[{\"delta\":{\"reasoning_content\":\"thinking \"}}]}\n\n"))[m
+[32m+[m		[32m_, _ = w.Write([]byte("data: {\"choices\":[{\"delta\":{\"content\":\"hello\"}}]}\n\n"))[m
+[32m+[m		[32m_, _ = w.Write([]byte("data: {\"choices\":[{\"finish_reason\":\"stop\",\"delta\":{}}]}\n\n"))[m
+[32m+[m		[32m_, _ = w.Write([]byte("data: [DONE]\n\n"))[m
+[32m+[m	[32m}))[m
+[32m+[m	[32mdefer srv.Close()[m
+[32m+[m
+[32m+[m	[32mp := NewNVIDIAProvider(srv.URL, "test-key", 5*time.Second, 0, true, true, false)[m
+[32m+[m	[32mstream, err := p.ChatStream(context.Background(), ChatRequest{[m
+[32m+[m		[32mModel:       "z-ai/glm5",[m
+[32m+[m		[32mMessages:    []ChatMessage{{Role: "user", Content: "hi"}},[m
+[32m+[m		[32mTemperature: 0.1,[m
+[32m+[m		[32mMaxTokens:   64,[m
+[32m+[m	[32m})[m
+[32m+[m	[32mif err != nil {[m
+[32m+[m		[32mt.Fatalf("chat stream failed: %v", err)[m
+[32m+[m	[32m}[m
+[32m+[m	[32mdefer stream.Close()[m
+[32m+[m
+[32m+[m	[32mvar got []StreamEvent[m
+[32m+[m	[32mfor {[m
+[32m+[m		[32mev, recvErr := stream.Recv()[m
+[32m+[m		[32mif recvErr == io.EOF {[m
+[32m+[m			[32mbreak[m
+[32m+[m		[32m}[m
+[32m+[m		[32mif recvErr != nil {[m
+[32m+[m			[32mt.Fatalf("stream recv failed: %v", recvErr)[m
+[32m+[m		[32m}[m
+[32m+[m		[32mgot = append(got, *ev)[m
+[32m+[m	[32m}[m
+[32m+[m	[32mif len(got) < 3 {[m
+[32m+[m		[32mt.Fatalf("expected >=3 events, got %d", len(got))[m
+[32m+[m	[32m}[m
+[32m+[m	[32mif got[0].Type != "delta" || got[1].Type != "delta" {[m
+[32m+[m		[32mt.Fatalf("unexpected first events: %+v", got[:2])[m
+[32m+[m	[32m}[m
+[32m+[m	[32mif got[2].Type != "meta" || !strings.Contains(got[2].Text, "finish_reason=stop") {[m
+[32m+[m		[32mt.Fatalf("unexpected meta event: %+v", got[2])[m
+[32m+[m	[32m}[m
+[32m+[m[32m}[m
+[1mdiff --git a/internal/llm/provider.go b/internal/llm/provider.go[m
+[1mindex 77c284b..eed3bfe 100644[m
+[1m--- a/internal/llm/provider.go[m
+[1m+++ b/internal/llm/provider.go[m
+[36m@@ -18,10 +18,47 @@[m [mtype ChatRequest struct {[m
+ }[m
+ [m
+ type ChatResponse struct {[m
+[31m-	Content   string[m
+[31m-	Reasoning string[m
+[32m+[m	[32mContent      string[m
+[32m+[m	[32mReasoning    string[m
+[32m+[m	[32mFinishReason string[m
+[32m+[m[32m}[m
+[32m+[m
+[32m+[m[32mtype StreamEvent struct {[m
+[32m+[m	[32mType string[m
+[32m+[m	[32mText string[m
+[32m+[m[32m}[m
+[32m+[m
+[32m+[m[32mtype Stream interface {[m
+[32m+[m	[32mRecv() (*StreamEvent, error)[m
+[32m+[m	[32mClose() error[m
+ }[m
+ [m
+ type Provider interface {[m
+ 	Chat(ctx context.Context, req ChatRequest) (ChatResponse, error)[m
+[32m+[m	[32mChatStream(ctx context.Context, req ChatRequest) (Stream, error)[m
+[32m+[m[32m}[m
+[32m+[m
+[32m+[m[32mtype StreamDelta struct {[m
+[32m+[m	[32mContent   string[m
+[32m+[m	[32mReasoning string[m
+[32m+[m[32m}[m
+[32m+[m
+[32m+[m[32mtype StreamHandler func(delta StreamDelta)[m
+[32m+[m
+[32m+[m[32mtype streamHandlerContextKey struct{}[m
+[32m+[m
+[32m+[m[32mfunc WithStreamHandler(ctx context.Context, handler StreamHandler) context.Context {[m
+[32m+[m	[32mif handler == nil {[m
+[32m+[m		[32mreturn ctx[m
+[32m+[m	[32m}[m
+[32m+[m	[32mreturn context.WithValue(ctx, streamHandlerContextKey{}, handler)[m
+[32m+[m[32m}[m
+[32m+[m
+[32m+[m[32mfunc streamHandlerFromContext(ctx context.Context) StreamHandler {[m
+[32m+[m	[32mif ctx == nil {[m
+[32m+[m		[32mreturn nil[m
+[32m+[m	[32m}[m
+[32m+[m	[32mv := ctx.Value(streamHandlerContextKey{})[m
+[32m+[m	[32mh, _ := v.(StreamHandler)[m
+[32m+[m	[32mreturn h[m
+ }[m
+[1mdiff --git a/internal/retrieval/service.go b/internal/retrieval/service.go[m
+[1mindex 2e9ddef..aa4937e 100644[m
+[1m--- a/internal/retrieval/service.go[m
+[1m+++ b/internal/retrieval/service.go[m
+[36m@@ -168,6 +168,93 @@[m [mfunc (s *Service) ChunkCount() int {[m
+ 	return len(s.chunks)[m
+ }[m
+ [m
+[32m+[m[32mfunc (s *Service) OnToolResult(ctx context.Context, toolName string, args json.RawMessage, runErr error) error {[m
+[32m+[m	[32mif runErr != nil {[m
+[32m+[m		[32mreturn nil[m
+[32m+[m	[32m}[m
+[32m+[m	[32mtoolName = strings.ToLower(strings.TrimSpace(toolName))[m
+[32m+[m	[32mvar paths []string[m
+[32m+[m	[32mswitch toolName {[m
+[32m+[m	[32mcase "edit", "patch":[m
+[32m+[m		[32mvar in struct {[m
+[32m+[m			[32mPath string `json:"path"`[m
+[32m+[m		[32m}[m
+[32m+[m		[32mif err := json.Unmarshal(args, &in); err != nil {[m
+[32m+[m			[32mreturn nil[m
+[32m+[m		[32m}[m
+[32m+[m		[32mif strings.TrimSpace(in.Path) != "" {[m
+[32m+[m			[32mpaths = append(paths, in.Path)[m
+[32m+[m		[32m}[m
+[32m+[m	[32mdefault:[m
+[32m+[m		[32mreturn nil[m
+[32m+[m	[32m}[m
+[32m+[m	[32mreturn s.ReindexPaths(ctx, paths)[m
+[32m+[m[32m}[m
+[32m+[m
+[32m+[m[32mfunc (s *Service) ReindexPaths(ctx context.Context, paths []string) error {[m
+[32m+[m	[32mif s.embedder == nil {[m
+[32m+[m		[32mreturn nil[m
+[32m+[m	[32m}[m
+[32m+[m	[32mif len(paths) == 0 {[m
+[32m+[m		[32mreturn nil[m
+[32m+[m	[32m}[m
+[32m+[m	[32mabsRoot, err := filepath.Abs(s.opts.Root)[m
+[32m+[m	[32mif err != nil {[m
+[32m+[m		[32mreturn err[m
+[32m+[m	[32m}[m
+[32m+[m	[32mpathSet := map[string]struct{}{}[m
+[32m+[m	[32mnewByPath := map[string][]Chunk{}[m
+[32m+[m	[32mfor _, p := range paths {[m
+[32m+[m		[32mif err := ctx.Err(); err != nil {[m
+[32m+[m			[32mreturn err[m
+[32m+[m		[32m}[m
+[32m+[m		[32mrel := normalizeRelPath(p)[m
+[32m+[m		[32mif rel == "" {[m
+[32m+[m			[32mcontinue[m
+[32m+[m		[32m}[m
+[32m+[m		[32mif _, ok := pathSet[rel]; ok {[m
+[32m+[m			[32mcontinue[m
+[32m+[m		[32m}[m
+[32m+[m		[32mpathSet[rel] = struct{}{}[m
+[32m+[m		[32mch, buildErr := buildChunksForSinglePath(absRoot, rel, s.opts)[m
+[32m+[m		[32mif buildErr != nil {[m
+[32m+[m			[32mreturn buildErr[m
+[32m+[m		[32m}[m
+[32m+[m		[32mif len(ch) > 0 {[m
+[32m+[m			[32mif err := embedAllChunks(ctx, s.embedder, ch, s.opts.BatchSize); err != nil {[m
+[32m+[m				[32mreturn err[m
+[32m+[m			[32m}[m
+[32m+[m		[32m}[m
+[32m+[m		[32mnewByPath[rel] = ch[m
+[32m+[m	[32m}[m
+[32m+[m	[32mif len(pathSet) == 0 {[m
+[32m+[m		[32mreturn nil[m
+[32m+[m	[32m}[m
+[32m+[m
+[32m+[m	[32ms.mu.Lock()[m
+[32m+[m	[32mupdated := make([]Chunk, 0, len(s.chunks))[m
+[32m+[m	[32mfor _, ch := range s.chunks {[m
+[32m+[m		[32mif _, remove := pathSet[ch.Path]; remove {[m
+[32m+[m			[32mcontinue[m
+[32m+[m		[32m}[m
+[32m+[m		[32mupdated = append(updated, ch)[m
+[32m+[m	[32m}[m
+[32m+[m	[32mfor rel := range pathSet {[m
+[32m+[m		[32mupdated = append(updated, newByPath[rel]...)[m
+[32m+[m	[32m}[m
+[32m+[m	[32msort.Slice(updated, func(i, j int) bool {[m
+[32m+[m		[32mif updated[i].Path == updated[j].Path {[m
+[32m+[m			[32mreturn updated[i].StartLine < updated[j].StartLine[m
+[32m+[m		[32m}[m
+[32m+[m		[32mreturn updated[i].Path < updated[j].Path[m
+[32m+[m	[32m})[m
+[32m+[m	[32ms.chunks = updated[m
+[32m+[m	[32msnapshot := append([]Chunk(nil), s.chunks...)[m
+[32m+[m	[32ms.mu.Unlock()[m
+[32m+[m
+[32m+[m	[32mreturn saveJSONL(s.opts.IndexPath, snapshot)[m
+[32m+[m[32m}[m
+[32m+[m
+ func normalizeOptions(opts Options) Options {[m
+ 	def := DefaultOptions(opts.Root)[m
+ 	if strings.TrimSpace(opts.Root) == "" {[m
+[36m@@ -243,9 +330,6 @@[m [mfunc buildChunks(root string, opts Options) ([]Chunk, error) {[m
+ 			if _, ok := ignore[name]; ok {[m
+ 				return fs.SkipDir[m
+ 			}[m
+[31m-			if strings.HasPrefix(name, ".") {[m
+[31m-				return fs.SkipDir[m
+[31m-			}[m
+ 			return nil[m
+ 		}[m
+ 		if !d.Type().IsRegular() {[m
+[36m@@ -287,6 +371,56 @@[m [mfunc buildChunks(root string, opts Options) ([]Chunk, error) {[m
+ 	return out, nil[m
+ }[m
+ [m
+[32m+[m[32mfunc buildChunksForSinglePath(absRoot, rel string, opts Options) ([]Chunk, error) {[m
+[32m+[m	[32mrel = normalizeRelPath(rel)[m
+[32m+[m	[32mif rel == "" {[m
+[32m+[m		[32mreturn nil, nil[m
+[32m+[m	[32m}[m
+[32m+[m	[32mif opts.MaxFileBytes <= 0 {[m
+[32m+[m		[32mopts.MaxFileBytes = 2 * 1024 * 1024[m
+[32m+[m	[32m}[m
+[32m+[m	[32msegments := strings.Split(strings.ToLower(rel), "/")[m
+[32m+[m	[32mignoredSet := map[string]struct{}{}[m
+[32m+[m	[32mfor _, ignored := range opts.IgnoreDirs {[m
+[32m+[m		[32mignored = strings.ToLower(strings.TrimSpace(ignored))[m
+[32m+[m		[32mif ignored == "" {[m
+[32m+[m			[32mcontinue[m
+[32m+[m		[32m}[m
+[32m+[m		[32mignoredSet[ignored] = struct{}{}[m
+[32m+[m	[32m}[m
+[32m+[m	[32mfor _, seg := range segments[:max(0, len(segments)-1)] {[m
+[32m+[m		[32mif _, blocked := ignoredSet[seg]; blocked {[m
+[32m+[m			[32mreturn nil, nil[m
+[32m+[m		[32m}[m
+[32m+[m	[32m}[m
+[32m+[m	[32mif !isLikelySourceFile(rel) {[m
+[32m+[m		[32mreturn nil, nil[m
+[32m+[m	[32m}[m
+[32m+[m	[32mabsPath := filepath.Join(absRoot, filepath.FromSlash(rel))[m
+[32m+[m	[32minfo, err := os.Stat(absPath)[m
+[32m+[m	[32mif err != nil {[m
+[32m+[m		[32mif errors.Is(err, os.ErrNotExist) {[m
+[32m+[m			[32mreturn nil, nil[m
+[32m+[m		[32m}[m
+[32m+[m		[32mreturn nil, err[m
+[32m+[m	[32m}[m
+[32m+[m	[32mif !info.Mode().IsRegular() {[m
+[32m+[m		[32mreturn nil, nil[m
+[32m+[m	[32m}[m
+[32m+[m	[32mif info.Size() > opts.MaxFileBytes {[m
+[32m+[m		[32mreturn nil, nil[m
+[32m+[m	[32m}[m
+[32m+[m	[32mraw, err := os.ReadFile(absPath)[m
+[32m+[m	[32mif err != nil {[m
+[32m+[m		[32mreturn nil, err[m
+[32m+[m	[32m}[m
+[32m+[m	[32mif len(raw) == 0 || !isLikelyText(raw) {[m
+[32m+[m		[32mreturn nil, nil[m
+[32m+[m	[32m}[m
+[32m+[m	[32mtext := strings.ReplaceAll(string(raw), "\r\n", "\n")[m
+[32m+[m	[32mreturn chunkText(rel, text, opts.ChunkLines, opts.ChunkOverlap, opts.MaxChunkChars), nil[m
+[32m+[m[32m}[m
+[32m+[m
+ func chunkText(path, text string, chunkLines, overlap, maxChars int) []Chunk {[m
+ 	lines := strings.Split(text, "\n")[m
+ 	if len(lines) == 0 {[m
+[36m@@ -559,3 +693,13 @@[m [mfunc clipRunes(s string, max int) string {[m
+ 	}[m
+ 	return string(r[:max])[m
+ }[m
+[32m+[m
+[32m+[m[32mfunc normalizeRelPath(p string) string {[m
+[32m+[m	[32mp = filepath.ToSlash(strings.TrimSpace(p))[m
+[32m+[m	[32mp = strings.TrimPrefix(p, "./")[m
+[32m+[m	[32mp = strings.TrimPrefix(p, "/")[m
+[32m+[m	[32mif p == "." {[m
+[32m+[m		[32mreturn ""[m
+[32m+[m	[32m}[m
+[32m+[m	[32mreturn p[m
+[32m+[m[32m}[m
+[1mdiff --git a/internal/retrieval/service_test.go b/internal/retrieval/service_test.go[m
+[1mindex c902d7b..0cc42e0 100644[m
+[1m--- a/internal/retrieval/service_test.go[m
+[1m+++ b/internal/retrieval/service_test.go[m
+[36m@@ -2,6 +2,8 @@[m [mpackage retrieval[m
+ [m
+ import ([m
+ 	"context"[m
+[32m+[m	[32m"encoding/json"[m
+[32m+[m	[32m"os"[m
+ 	"path/filepath"[m
+ 	"strings"[m
+ 	"testing"[m
+[36m@@ -25,6 +27,21 @@[m [mfunc (q queryOnlyEmbedder) Embed(_ context.Context, texts []string, inputType st[m
+ 	return out, nil[m
+ }[m
+ [m
+[32m+[m[32mtype staticEmbedder struct{}[m
+[32m+[m
+[32m+[m[32mfunc (staticEmbedder) Embed(_ context.Context, texts []string, inputType string) ([][]float64, error) {[m
+[32m+[m	[32mout := make([][]float64, len(texts))[m
+[32m+[m	[32mfor i, txt := range texts {[m
+[32m+[m		[32msize := float64(len([]rune(txt)))[m
+[32m+[m		[32mif strings.EqualFold(strings.TrimSpace(inputType), "query") {[m
+[32m+[m			[32mout[i] = []float64{1, 0}[m
+[32m+[m			[32mcontinue[m
+[32m+[m		[32m}[m
+[32m+[m		[32mout[i] = []float64{size + 1, 1}[m
+[32m+[m	[32m}[m
+[32m+[m	[32mreturn out, nil[m
+[32m+[m[32m}[m
+[32m+[m
+ func TestTopKWithDiversity(t *testing.T) {[m
+ 	chunks := []Chunk{[m
+ 		{Path: "a.go", StartLine: 1, EndLine: 20, Text: "a1", Vec: []float64{0.90, 0.40}},[m
+[36m@@ -87,3 +104,41 @@[m [mfunc TestServiceRetrieveFormatsContext(t *testing.T) {[m
+ 		t.Fatalf("unexpected retrieve output: %s", out)[m
+ 	}[m
+ }[m
+[32m+[m
+[32m+[m[32mfunc TestServiceOnToolResultReindexesEditedPath(t *testing.T) {[m
+[32m+[m	[32mroot := t.TempDir()[m
+[32m+[m	[32mopts := DefaultOptions(root)[m
+[32m+[m	[32mopts.IndexPath = filepath.Join(root, "idx.jsonl")[m
+[32m+[m	[32mopts.ChunkLines = 20[m
+[32m+[m	[32mopts.ChunkOverlap = 5[m
+[32m+[m	[32mopts.BatchSize = 4[m
+[32m+[m
+[32m+[m	[32mfile := filepath.Join(root, "a.go")[m
+[32m+[m	[32mif err := os.WriteFile(file, []byte("package main\n\nfunc A(){\nprintln(\"old\")\n}\n"), 0o644); err != nil {[m
+[32m+[m		[32mt.Fatalf("write file: %v", err)[m
+[32m+[m	[32m}[m
+[32m+[m	[32msvc := NewService(staticEmbedder{}, opts)[m
+[32m+[m	[32mif err := svc.LoadOrBuild(context.Background(), true); err != nil {[m
+[32m+[m		[32mt.Fatalf("load/build: %v", err)[m
+[32m+[m	[32m}[m
+[32m+[m
+[32m+[m	[32mif err := os.WriteFile(file, []byte("package main\n\nfunc A(){\nprintln(\"new\")\n}\n"), 0o644); err != nil {[m
+[32m+[m		[32mt.Fatalf("rewrite file: %v", err)[m
+[32m+[m	[32m}[m
+[32m+[m	[32margs, _ := json.Marshal(map[string]any{"path": "a.go"})[m
+[32m+[m	[32mif err := svc.OnToolResult(context.Background(), "edit", args, nil); err != nil {[m
+[32m+[m		[32mt.Fatalf("on tool result: %v", err)[m
+[32m+[m	[32m}[m
+[32m+[m	[32msvc.mu.RLock()[m
+[32m+[m	[32mdefer svc.mu.RUnlock()[m
+[32m+[m	[32mfound := false[m
+[32m+[m	[32mfor _, ch := range svc.chunks {[m
+[32m+[m		[32mif ch.Path == "a.go" && strings.Contains(ch.Text, "println(\"new\")") {[m
+[32m+[m			[32mfound = true[m
+[32m+[m			[32mbreak[m
+[32m+[m		[32m}[m
+[32m+[m	[32m}[m
+[32m+[m	[32mif !found {[m
+[32m+[m		[32mt.Fatalf("expected updated chunk text after reindex")[m
+[32m+[m	[32m}[m
+[32m+[m[32m}[m
+[1mdiff --git a/internal/tool/builtin_write_exec.go b/internal/tool/builtin_write_exec.go[m
+[1mindex 006d0f9..a9ebcb0 100644[m
+[1m--- a/internal/tool/builtin_write_exec.go[m
+[1m+++ b/internal/tool/builtin_write_exec.go[m
+[36m@@ -7,6 +7,8 @@[m [mimport ([m
+ 	"os"[m
+ 	"os/exec"[m
+ 	"path/filepath"[m
+[32m+[m	[32m"regexp"[m
+[32m+[m	[32m"slices"[m
+ 	"strings"[m
+ 	"time"[m
+ )[m
+[36m@@ -136,9 +138,78 @@[m [mfunc (t *bashTool) Run(ctx context.Context, args json.RawMessage) (Result, error[m
+ 	cmd := exec.CommandContext(runCtx, "powershell", "-NoProfile", "-Command", in.Cmd)[m
+ 	cmd.Dir = cwd[m
+ 	out, err := cmd.CombinedOutput()[m
+[31m-	text := t.trimOutput(string(out))[m
+[32m+[m	[32mtext := summarizeCommandOutput(in.Cmd, string(out))[m
+[32m+[m	[32mtext = t.trimOutput(text)[m
+ 	if err != nil {[m
+ 		return Result{Output: text}, fmt.Errorf("bash failed: %w", err)[m
+ 	}[m
+ 	return Result{Output: text}, nil[m
+ }[m
+[32m+[m
+[32m+[m[32mfunc summarizeCommandOutput(cmd, output string) string {[m
+[32m+[m	[32mcmdLower := strings.ToLower(cmd)[m
+[32m+[m	[32minterestingCmd := strings.Contains(cmdLower, "go test") ||[m
+[32m+[m		[32mstrings.Contains(cmdLower, "go build") ||[m
+[32m+[m		[32mstrings.Contains(cmdLower, "go vet") ||[m
+[32m+[m		[32mstrings.Contains(cmdLower, "pytest") ||[m
+[32m+[m		[32mstrings.Contains(cmdLower, "npm test") ||[m
+[32m+[m		[32mstrings.Contains(cmdLower, "pnpm test") ||[m
+[32m+[m		[32mstrings.Contains(cmdLower, "yarn test")[m
+[32m+[m	[32mif !interestingCmd {[m
+[32m+[m		[32mreturn output[m
+[32m+[m	[32m}[m
+[32m+[m	[32mlines := strings.Split(strings.ReplaceAll(output, "\r\n", "\n"), "\n")[m
+[32m+[m	[32mif len(lines) <= 160 {[m
+[32m+[m		[32mreturn output[m
+[32m+[m	[32m}[m
+[32m+[m
+[32m+[m	[32mpattern := regexp.MustCompile(`(?i)(^FAIL\b|\bfail(ed|ure)?\b|panic:|fatal:|error:|undefined:|exception|traceback)`)[m
+[32m+[m	[32mkeep := map[int]struct{}{}[m
+[32m+[m	[32mkeepWindow := func(center int, radius int) {[m
+[32m+[m		[32mstart := center - radius[m
+[32m+[m		[32mif start < 0 {[m
+[32m+[m			[32mstart = 0[m
+[32m+[m		[32m}[m
+[32m+[m		[32mend := center + radius[m
+[32m+[m		[32mif end >= len(lines) {[m
+[32m+[m			[32mend = len(lines) - 1[m
+[32m+[m		[32m}[m
+[32m+[m		[32mfor i := start; i <= end; i++ {[m
+[32m+[m			[32mkeep[i] = struct{}{}[m
+[32m+[m		[32m}[m
+[32m+[m	[32m}[m
+[32m+[m	[32mfor i, line := range lines {[m
+[32m+[m		[32mif pattern.MatchString(line) {[m
+[32m+[m			[32mkeepWindow(i, 2)[m
+[32m+[m		[32m}[m
+[32m+[m	[32m}[m
+[32m+[m	[32mfor i := 0; i < len(lines) && i < 20; i++ {[m
+[32m+[m		[32mkeep[i] = struct{}{}[m
+[32m+[m	[32m}[m
+[32m+[m	[32mfor i := len(lines) - 20; i < len(lines); i++ {[m
+[32m+[m		[32mif i >= 0 {[m
+[32m+[m			[32mkeep[i] = struct{}{}[m
+[32m+[m		[32m}[m
+[32m+[m	[32m}[m
+[32m+[m	[32mif len(keep) == len(lines) {[m
+[32m+[m		[32mreturn output[m
+[32m+[m	[32m}[m
+[32m+[m
+[32m+[m	[32mids := make([]int, 0, len(keep))[m
+[32m+[m	[32mfor i := range keep {[m
+[32m+[m		[32mids = append(ids, i)[m
+[32m+[m	[32m}[m
+[32m+[m	[32mslices.Sort(ids)[m
+[32m+[m	[32mvar b strings.Builder[m
+[32m+[m	[32mfmt.Fprintf(&b, "[summarized output] kept %d/%d lines\n", len(ids), len(lines))[m
+[32m+[m	[32mlast := -1[m
+[32m+[m	[32mfor _, i := range ids {[m
+[32m+[m		[32mif last >= 0 && i-last > 1 {[m
+[32m+[m			[32mb.WriteString("...\n")[m
+[32m+[m		[32m}[m
+[32m+[m		[32mb.WriteString(lines[i])[m
+[32m+[m		[32mb.WriteString("\n")[m
+[32m+[m		[32mlast = i[m
+[32m+[m	[32m}[m
+[32m+[m	[32mreturn strings.TrimSpace(b.String())[m
+[32m+[m[32m}[m
+[1mdiff --git a/opencode/agent.yaml b/opencode/agent.yaml[m
+[1mindex 0d95ba8..613c293 100644[m
+[1m--- a/opencode/agent.yaml[m
+[1m+++ b/opencode/agent.yaml[m
+[36m@@ -2,7 +2,7 @@[m [mdefault_agent: build[m
+ workspace_root: .[m
+ rules_file: AGENTS.md[m
+ storage_path: data/agent.db[m
+[31m-embedding_enabled: false[m
+[32m+[m[32membedding_enabled: true[m
+ embedding_base_url: http://localhost:8001[m
+ embedding_model: nvidia/llama-3.2-nv-embedqa-1b-v2[m
+ embedding_index_path: data/embed-index.jsonl[m
+[36m@@ -12,6 +12,7 @@[m [membedding_chunk_lines: 260[m
+ embedding_chunk_overlap: 50[m
+ embedding_batch_size: 12[m
+ embedding_max_context_chars: 28000[m
+[32m+[m[32membedding_ignore_dirs: [".git", ".run", "node_modules", "dist", "build", "vendor", "bin"][m
+ embedding_init_timeout: 8m[m
+ compaction_turns: 30[m
+ compaction_token_threshold: 12000[m
+[36m@@ -36,7 +37,7 @@[m [magents:[m
+     permissions:[m
+       "*": allow[m
+     temperature: 0.2[m
+[31m-    max_tokens: 150000[m
+[32m+[m[32m    max_tokens: 12288[m
+ [m
+   plan:[m
+     mode: primary[m
+[36m@@ -48,4 +49,4 @@[m [magents:[m
+       bash: ask[m
+       "*": allow[m
+     temperature: 0.1[m
+[31m-    max_tokens: 150000[m
+[32m+[m[32m    max_tokens: 6144[m

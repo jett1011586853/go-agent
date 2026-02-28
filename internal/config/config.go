@@ -37,7 +37,12 @@ type fileConfig struct {
 	EmbeddingOverlap  *int                   `yaml:"embedding_chunk_overlap"`
 	EmbeddingBatch    int                    `yaml:"embedding_batch_size"`
 	EmbeddingMaxCtx   int                    `yaml:"embedding_max_context_chars"`
+	EmbeddingIgnore   []string               `yaml:"embedding_ignore_dirs"`
 	EmbeddingInitTime string                 `yaml:"embedding_init_timeout"`
+	RerankEnabled     *bool                  `yaml:"rerank_enabled"`
+	RerankBaseURL     string                 `yaml:"rerank_base_url"`
+	RerankModel       string                 `yaml:"rerank_model"`
+	RerankCandidateK  int                    `yaml:"rerank_candidate_k"`
 	CompactionTurns   int                    `yaml:"compaction_turns"`
 	CompactionTokens  int                    `yaml:"compaction_token_threshold"`
 	ContextTurnWindow int                    `yaml:"context_turn_window"`
@@ -70,7 +75,12 @@ type Config struct {
 	EmbeddingOverlap  int
 	EmbeddingBatch    int
 	EmbeddingMaxCtx   int
+	EmbeddingIgnore   []string
 	EmbeddingInitTime time.Duration
+	RerankEnabled     bool
+	RerankBaseURL     string
+	RerankModel       string
+	RerankCandidateK  int
 	CompactionTurns   int
 	CompactionTokens  int
 	ContextTurnWindow int
@@ -121,25 +131,38 @@ func defaultConfig() Config {
 				Model:       "z-ai/glm5",
 				Tools:       []string{"list", "glob", "grep", "read", "edit", "patch", "bash", "webfetch", "websearch"},
 				Permissions: map[string]string{"edit": "ask", "patch": "ask", "bash": "ask", "*": "allow"},
-				Temperature: 0.1,
+				Temperature: 0.4,
 				MaxTokens:   1400,
 			},
 		},
-		DefaultAgent:      "build",
-		WorkspaceRoot:     workspace,
-		RulesFile:         filepath.Join(workspace, "AGENTS.md"),
-		StoragePath:       filepath.Join(workspace, "data", "agent.db"),
-		EmbeddingEnabled:  false,
-		EmbeddingBaseURL:  "http://localhost:8001",
-		EmbeddingModel:    "nvidia/llama-3.2-nv-embedqa-1b-v2",
-		EmbeddingIndex:    filepath.Join(workspace, "data", "embed-index.jsonl"),
-		EmbeddingTopK:     12,
-		EmbeddingPerFile:  3,
-		EmbeddingChunk:    260,
-		EmbeddingOverlap:  50,
-		EmbeddingBatch:    12,
-		EmbeddingMaxCtx:   28000,
+		DefaultAgent:     "build",
+		WorkspaceRoot:    workspace,
+		RulesFile:        filepath.Join(workspace, "AGENTS.md"),
+		StoragePath:      filepath.Join(workspace, "data", "agent.db"),
+		EmbeddingEnabled: false,
+		EmbeddingBaseURL: "http://localhost:8001",
+		EmbeddingModel:   "nvidia/llama-3.2-nv-embedqa-1b-v2",
+		EmbeddingIndex:   filepath.Join(workspace, "data", "embed-index.jsonl"),
+		EmbeddingTopK:    12,
+		EmbeddingPerFile: 3,
+		EmbeddingChunk:   260,
+		EmbeddingOverlap: 50,
+		EmbeddingBatch:   12,
+		EmbeddingMaxCtx:  28000,
+		EmbeddingIgnore: []string{
+			".git",
+			".run",
+			"node_modules",
+			"dist",
+			"build",
+			"vendor",
+			"bin",
+		},
 		EmbeddingInitTime: 8 * time.Minute,
+		RerankEnabled:     false,
+		RerankBaseURL:     "http://localhost:8002",
+		RerankModel:       "nvidia/llama-3.2-nv-rerankqa-1b-v2",
+		RerankCandidateK:  20,
 		CompactionTurns:   30,
 		CompactionTokens:  12000,
 		ContextTurnWindow: 10,
@@ -219,12 +242,27 @@ func applyYAMLConfig(cfg *Config, path string) error {
 	if fc.EmbeddingMaxCtx > 0 {
 		cfg.EmbeddingMaxCtx = fc.EmbeddingMaxCtx
 	}
+	if len(fc.EmbeddingIgnore) > 0 {
+		cfg.EmbeddingIgnore = append([]string(nil), fc.EmbeddingIgnore...)
+	}
 	if v := strings.TrimSpace(fc.EmbeddingInitTime); v != "" {
 		d, err := time.ParseDuration(v)
 		if err != nil {
 			return fmt.Errorf("invalid embedding_init_timeout in yaml: %w", err)
 		}
 		cfg.EmbeddingInitTime = d
+	}
+	if fc.RerankEnabled != nil {
+		cfg.RerankEnabled = *fc.RerankEnabled
+	}
+	if v := strings.TrimSpace(fc.RerankBaseURL); v != "" {
+		cfg.RerankBaseURL = v
+	}
+	if v := strings.TrimSpace(fc.RerankModel); v != "" {
+		cfg.RerankModel = v
+	}
+	if fc.RerankCandidateK > 0 {
+		cfg.RerankCandidateK = fc.RerankCandidateK
 	}
 	if fc.CompactionTurns > 0 {
 		cfg.CompactionTurns = fc.CompactionTurns
@@ -377,9 +415,37 @@ func applyEnvOverrides(cfg *Config) {
 			cfg.EmbeddingMaxCtx = n
 		}
 	}
+	if v := strings.TrimSpace(os.Getenv("EMBEDDING_IGNORE_DIRS")); v != "" {
+		parts := strings.Split(v, ",")
+		items := make([]string, 0, len(parts))
+		for _, p := range parts {
+			p = strings.TrimSpace(p)
+			if p == "" {
+				continue
+			}
+			items = append(items, p)
+		}
+		if len(items) > 0 {
+			cfg.EmbeddingIgnore = items
+		}
+	}
 	if v := strings.TrimSpace(os.Getenv("EMBEDDING_INIT_TIMEOUT")); v != "" {
 		if d, err := time.ParseDuration(v); err == nil && d >= 0 {
 			cfg.EmbeddingInitTime = d
+		}
+	}
+	if v := strings.TrimSpace(strings.ToLower(os.Getenv("RERANK_ENABLED"))); v != "" {
+		cfg.RerankEnabled = v == "1" || v == "true" || v == "yes" || v == "on"
+	}
+	if v := strings.TrimSpace(os.Getenv("RERANK_BASE_URL")); v != "" {
+		cfg.RerankBaseURL = v
+	}
+	if v := strings.TrimSpace(os.Getenv("RERANK_MODEL")); v != "" {
+		cfg.RerankModel = v
+	}
+	if v := strings.TrimSpace(os.Getenv("RERANK_CANDIDATE_K")); v != "" {
+		if n, err := strconv.Atoi(v); err == nil && n > 0 {
+			cfg.RerankCandidateK = n
 		}
 	}
 	if v := strings.TrimSpace(os.Getenv("LLM_MAX_RETRIES")); v != "" {
@@ -458,8 +524,18 @@ func normalizeAndValidate(cfg *Config) error {
 	if cfg.EmbeddingMaxCtx <= 0 {
 		cfg.EmbeddingMaxCtx = 28000
 	}
+	cfg.EmbeddingIgnore = normalizeStringList(cfg.EmbeddingIgnore)
+	if len(cfg.EmbeddingIgnore) == 0 {
+		cfg.EmbeddingIgnore = []string{".git", ".run", "node_modules", "dist", "build", "vendor", "bin"}
+	}
 	if cfg.EmbeddingInitTime < 0 {
 		cfg.EmbeddingInitTime = 0
+	}
+	if cfg.RerankCandidateK <= 0 {
+		cfg.RerankCandidateK = 20
+	}
+	if cfg.RerankEnabled && !cfg.EmbeddingEnabled {
+		cfg.RerankEnabled = false
 	}
 	if cfg.EmbeddingEnabled {
 		if strings.TrimSpace(cfg.EmbeddingBaseURL) == "" {
@@ -467,6 +543,14 @@ func normalizeAndValidate(cfg *Config) error {
 		}
 		if strings.TrimSpace(cfg.EmbeddingModel) == "" {
 			return errors.New("embedding_model is required when embedding_enabled=true")
+		}
+	}
+	if cfg.RerankEnabled {
+		if strings.TrimSpace(cfg.RerankBaseURL) == "" {
+			return errors.New("rerank_base_url is required when rerank_enabled=true")
+		}
+		if strings.TrimSpace(cfg.RerankModel) == "" {
+			return errors.New("rerank_model is required when rerank_enabled=true")
 		}
 	}
 
@@ -507,8 +591,8 @@ func normalizeAndValidate(cfg *Config) error {
 		if ac.MaxTokens <= 0 {
 			ac.MaxTokens = 1600
 		}
-		if ac.MaxTokens > 200000 {
-			ac.MaxTokens = 200000
+		if ac.MaxTokens > 131071 {
+			ac.MaxTokens = 131071
 		}
 		if ac.Temperature < 0 {
 			ac.Temperature = 0
@@ -557,4 +641,21 @@ func loadDotEnv(path string) error {
 		}
 	}
 	return nil
+}
+
+func normalizeStringList(in []string) []string {
+	seen := map[string]struct{}{}
+	out := make([]string, 0, len(in))
+	for _, item := range in {
+		item = strings.TrimSpace(item)
+		if item == "" {
+			continue
+		}
+		if _, ok := seen[item]; ok {
+			continue
+		}
+		seen[item] = struct{}{}
+		out = append(out, item)
+	}
+	return out
 }

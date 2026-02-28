@@ -6,6 +6,7 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -154,5 +155,132 @@ func TestNVIDIAProviderStreamNotBoundByRequestTimeout(t *testing.T) {
 	}
 	if resp.Content != "ok" {
 		t.Fatalf("unexpected content: %q", resp.Content)
+	}
+}
+
+func TestNVIDIAProviderStreamDeltaCallback(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		_, _ = w.Write([]byte("data: {\"choices\":[{\"delta\":{\"reasoning_content\":\"thinking \"}}]}\n\n"))
+		_, _ = w.Write([]byte("data: {\"choices\":[{\"delta\":{\"content\":\"hello\"}}]}\n\n"))
+		_, _ = w.Write([]byte("data: {\"choices\":[{\"delta\":{\"content\":\" world\"}}]}\n\n"))
+		_, _ = w.Write([]byte("data: [DONE]\n\n"))
+	}))
+	defer srv.Close()
+
+	p := NewNVIDIAProvider(srv.URL, "test-key", 5*time.Second, 0, true, true, false)
+	var gotContent strings.Builder
+	var gotReasoning strings.Builder
+	ctx := WithStreamHandler(context.Background(), func(delta StreamDelta) {
+		gotContent.WriteString(delta.Content)
+		gotReasoning.WriteString(delta.Reasoning)
+	})
+	resp, err := p.Chat(ctx, ChatRequest{
+		Model:       "z-ai/glm5",
+		Messages:    []ChatMessage{{Role: "user", Content: "hi"}},
+		Temperature: 0.1,
+		MaxTokens:   256,
+	})
+	if err != nil {
+		t.Fatalf("chat failed: %v", err)
+	}
+	if gotContent.String() != "hello world" {
+		t.Fatalf("unexpected callback content: %q", gotContent.String())
+	}
+	if gotReasoning.String() != "thinking " {
+		t.Fatalf("unexpected callback reasoning: %q", gotReasoning.String())
+	}
+	if resp.Content != "hello world" {
+		t.Fatalf("unexpected content: %q", resp.Content)
+	}
+}
+
+func TestNVIDIAProviderFinishReasonJSON(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"choices":[{"finish_reason":"length","message":{"content":"x"}}]}`))
+	}))
+	defer srv.Close()
+
+	p := NewNVIDIAProvider(srv.URL, "test-key", 5*time.Second, 0, false, true, false)
+	resp, err := p.Chat(context.Background(), ChatRequest{
+		Model:       "z-ai/glm5",
+		Messages:    []ChatMessage{{Role: "user", Content: "hi"}},
+		Temperature: 0.1,
+		MaxTokens:   64,
+	})
+	if err != nil {
+		t.Fatalf("chat failed: %v", err)
+	}
+	if resp.FinishReason != "length" {
+		t.Fatalf("unexpected finish_reason: %q", resp.FinishReason)
+	}
+}
+
+func TestNVIDIAProviderFinishReasonStream(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		_, _ = w.Write([]byte("data: {\"choices\":[{\"delta\":{\"content\":\"ok\"}}]}\n\n"))
+		_, _ = w.Write([]byte("data: {\"choices\":[{\"delta\":{},\"finish_reason\":\"stop\"}]}\n\n"))
+		_, _ = w.Write([]byte("data: [DONE]\n\n"))
+	}))
+	defer srv.Close()
+
+	p := NewNVIDIAProvider(srv.URL, "test-key", 5*time.Second, 0, true, true, false)
+	resp, err := p.Chat(context.Background(), ChatRequest{
+		Model:       "z-ai/glm5",
+		Messages:    []ChatMessage{{Role: "user", Content: "hi"}},
+		Temperature: 0.1,
+		MaxTokens:   64,
+	})
+	if err != nil {
+		t.Fatalf("chat failed: %v", err)
+	}
+	if resp.FinishReason != "stop" {
+		t.Fatalf("unexpected finish_reason: %q", resp.FinishReason)
+	}
+}
+
+func TestNVIDIAProviderChatStream(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		_, _ = w.Write([]byte("data: {\"choices\":[{\"delta\":{\"reasoning_content\":\"thinking \"}}]}\n\n"))
+		_, _ = w.Write([]byte("data: {\"choices\":[{\"delta\":{\"content\":\"hello\"}}]}\n\n"))
+		_, _ = w.Write([]byte("data: {\"choices\":[{\"finish_reason\":\"stop\",\"delta\":{}}]}\n\n"))
+		_, _ = w.Write([]byte("data: [DONE]\n\n"))
+	}))
+	defer srv.Close()
+
+	p := NewNVIDIAProvider(srv.URL, "test-key", 5*time.Second, 0, true, true, false)
+	stream, err := p.ChatStream(context.Background(), ChatRequest{
+		Model:       "z-ai/glm5",
+		Messages:    []ChatMessage{{Role: "user", Content: "hi"}},
+		Temperature: 0.1,
+		MaxTokens:   64,
+	})
+	if err != nil {
+		t.Fatalf("chat stream failed: %v", err)
+	}
+	defer stream.Close()
+
+	var got []StreamEvent
+	for {
+		ev, recvErr := stream.Recv()
+		if recvErr == io.EOF {
+			break
+		}
+		if recvErr != nil {
+			t.Fatalf("stream recv failed: %v", recvErr)
+		}
+		got = append(got, *ev)
+	}
+	if len(got) < 3 {
+		t.Fatalf("expected >=3 events, got %d", len(got))
+	}
+	if got[0].Type != "delta" || got[1].Type != "delta" {
+		t.Fatalf("unexpected first events: %+v", got[:2])
+	}
+	if got[2].Type != "meta" || !strings.Contains(got[2].Text, "finish_reason=stop") {
+		t.Fatalf("unexpected meta event: %+v", got[2])
 	}
 }
