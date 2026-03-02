@@ -814,6 +814,96 @@ func TestHandleTurnPhaseGateRequiresProjectVerifyAndWritesSummary(t *testing.T) 
 	}
 }
 
+func TestHandleTurnPhaseGateRewritesRepeatedNonToolActions(t *testing.T) {
+	p := &stubProvider{
+		responses: []string{
+			`{"type":"final","content":"analysis only #1"}`,
+			`{"type":"no_tool","content":"analysis only #2"}`,
+			`{"type":"final","content":"analysis only #3"}`,
+			`{"type":"tool_call","tool":{"name":"edit","args":{"path":"a.txt","content":"phase-change"}}}`,
+			`{"type":"final","content":"phase-complete"}`,
+		},
+	}
+	a, _ := setupTestApp(t, p)
+	resp, err := a.HandleTurn(context.Background(), TurnRequest{
+		Input: "complete in 1 phase: first implement, then summarize",
+		Agent: "build",
+	}, fixedApprover(true))
+	if err != nil {
+		t.Fatalf("expected non-tool loop to be rewritten instead of aborted: %v", err)
+	}
+	if strings.TrimSpace(resp.Output) == "" {
+		t.Fatalf("expected non-empty output")
+	}
+	sess, err := a.GetSession(context.Background(), resp.SessionID)
+	if err != nil {
+		t.Fatalf("get session failed: %v", err)
+	}
+	if len(sess.Turns) == 0 {
+		t.Fatalf("expected turns")
+	}
+	last := sess.Turns[len(sess.Turns)-1]
+	seenRecoveryTool := false
+	for _, r := range last.Results {
+		if r.Name == "verify" || r.Name == "list" || r.Name == "read" {
+			seenRecoveryTool = true
+			break
+		}
+	}
+	if !seenRecoveryTool {
+		t.Fatalf("expected phase gate rewrite to force at least one recovery tool call")
+	}
+	if a.metrics == nil {
+		t.Fatalf("expected runtime metrics")
+	}
+	snap := a.metrics.snapshot()
+	if snap.PhaseRecoveryTotal < 1 {
+		t.Fatalf("expected phase recovery metrics to be recorded, got total=%d", snap.PhaseRecoveryTotal)
+	}
+	seenRecoveryTrigger := false
+	seenRecoveryOutcome := false
+	for _, ev := range last.Audit {
+		if ev.Type == "phase_recovery_trigger" {
+			seenRecoveryTrigger = true
+		}
+		if ev.Type == "phase_recovery_outcome" {
+			seenRecoveryOutcome = true
+		}
+	}
+	if !seenRecoveryTrigger {
+		t.Fatalf("expected phase_recovery_trigger audit event")
+	}
+	if !seenRecoveryOutcome {
+		t.Fatalf("expected phase_recovery_outcome audit event")
+	}
+}
+
+func TestHandleTurnPhaseGateCanClosePhaseViaVerifyWithoutWrites(t *testing.T) {
+	p := &stubProvider{
+		responses: []string{
+			`{"type":"final","content":"analysis #1"}`,
+			`{"type":"no_tool","content":"analysis #2"}`,
+			`{"type":"final","content":"analysis #3"}`,
+			`{"type":"final","content":"phase-complete-with-verify"}`,
+		},
+	}
+	a, root := setupTestApp(t, p)
+	resp, err := a.HandleTurn(context.Background(), TurnRequest{
+		Input: "complete in 1 phase and then summarize",
+		Agent: "build",
+	}, fixedApprover(true))
+	if err != nil {
+		t.Fatalf("expected phase to close through auto verify, got: %v", err)
+	}
+	if resp.Output != "phase-complete-with-verify" {
+		t.Fatalf("unexpected output: %q", resp.Output)
+	}
+	logPath := filepath.Join(root, "docs", "decision-log.md")
+	if _, err := os.Stat(logPath); err != nil {
+		t.Fatalf("expected phase summary log to be written: %v", err)
+	}
+}
+
 func TestHandleTurnPersistsSessionActiveRoot(t *testing.T) {
 	p := &stubProvider{
 		responses: []string{
@@ -859,6 +949,57 @@ func TestBuildPhaseVerifyFailureSummaryTemplate(t *testing.T) {
 		if !strings.Contains(summary, needle) {
 			t.Fatalf("expected summary to contain %q, got: %s", needle, summary)
 		}
+	}
+}
+
+func TestPickPhaseRecoveryActionPrefersVerifyWhenPending(t *testing.T) {
+	act, detail := pickPhaseRecoveryAction(
+		[]string{"list", "read", "verify"},
+		true,
+		false,
+		[]string{"projects/trade-lab/internal/backtest/engine.go"},
+		"projects/trade-lab",
+		"",
+	)
+	if act.Type != "tool_call" || act.Tool.Name != "verify" {
+		t.Fatalf("expected verify tool_call, got type=%q tool=%q", act.Type, act.Tool.Name)
+	}
+	if !strings.Contains(detail, "verify(scope=project") {
+		t.Fatalf("unexpected detail: %q", detail)
+	}
+}
+
+func TestPickPhaseRecoveryActionPrefersVerifyWhenAvailable(t *testing.T) {
+	act, detail := pickPhaseRecoveryAction(
+		[]string{"list", "read", "verify"},
+		false,
+		true,
+		[]string{"projects/trade-lab/internal/backtest/engine.go"},
+		"projects/trade-lab",
+		"",
+	)
+	if act.Type != "tool_call" || act.Tool.Name != "verify" {
+		t.Fatalf("expected verify tool_call, got type=%q tool=%q", act.Type, act.Tool.Name)
+	}
+	if !strings.Contains(detail, "tool_call.verify") {
+		t.Fatalf("unexpected detail: %q", detail)
+	}
+}
+
+func TestPickPhaseRecoveryActionFallsBackToReadWithoutVerify(t *testing.T) {
+	act, detail := pickPhaseRecoveryAction(
+		[]string{"list", "read"},
+		false,
+		false,
+		[]string{"projects/trade-lab/internal/backtest/engine.go"},
+		"projects/trade-lab",
+		"",
+	)
+	if act.Type != "tool_call" || act.Tool.Name != "read" {
+		t.Fatalf("expected read tool_call, got type=%q tool=%q", act.Type, act.Tool.Name)
+	}
+	if !strings.Contains(detail, "tool_call.read") {
+		t.Fatalf("unexpected detail: %q", detail)
 	}
 }
 

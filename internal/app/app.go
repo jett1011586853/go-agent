@@ -67,6 +67,7 @@ const (
 	maxConsecutiveSameToolCalls       = 12
 	maxConsecutiveToolFailures        = 8
 	maxPlannerTimeoutRecoveries       = 3
+	maxPhaseNonToolAttempts           = 3
 	failureFingerprintWindow          = 20
 	failureFingerprintReplanThreshold = 3
 	failureFingerprintAbortThreshold  = 6
@@ -220,6 +221,9 @@ func (a *App) HandleTurn(ctx context.Context, req TurnRequest, approver Approver
 	toolErrorSeen := false
 	toolRecoveryCounted := false
 	plannerSteps := 0
+	phaseNonToolAttempts := 0
+	lastPhaseGateMsg := ""
+	phaseFinalizeRequested := false
 	extraSystem := make([]string, 0, 2)
 	dynamicSkillsContext := ""
 	dynamicRetrievedContext := ""
@@ -328,6 +332,24 @@ func (a *App) HandleTurn(ctx context.Context, req TurnRequest, approver Approver
 	})
 
 	for step := 1; ; step++ {
+		phaseRecoveryKind := ""
+		recordPhaseRecoveryOutcome := func(ok bool, reason string) {
+			if strings.TrimSpace(phaseRecoveryKind) == "" {
+				return
+			}
+			kind := normalizeRecoveryKind(phaseRecoveryKind)
+			if a.metrics != nil {
+				a.metrics.recordPhaseRecoveryOutcome(phaseRecoveryKind, ok)
+			}
+			turn.Audit = append(turn.Audit, message.AuditEvent{
+				Type:      "phase_recovery_outcome",
+				ToolName:  kind,
+				Decision:  map[bool]string{true: "success", false: "failed"}[ok],
+				Detail:    fmt.Sprintf("kind=%s success=%t reason=%s", kind, ok, strings.TrimSpace(reason)),
+				CreatedAt: time.Now().UTC(),
+			})
+			phaseRecoveryKind = ""
+		}
 		if a.skills != nil {
 			skillsQuery := buildDynamicRetrieveQuery(cleanedInput, lastToolFailureHint, lastWorkingHint, phaseCtl.changedFiles(), activeRoot)
 			skillCtx, skillErr := a.skills.BuildContext(ctx, skillsQuery)
@@ -413,6 +435,25 @@ func (a *App) HandleTurn(ctx context.Context, req TurnRequest, approver Approver
 		if phaseCtl.enabled {
 			if phaseHint := strings.TrimSpace(phaseCtl.systemHint()); phaseHint != "" {
 				loopExtra = append(loopExtra, phaseHint)
+			}
+			if phaseCtl.hasRemainingPhases() {
+				if phaseCtl.pendingProjectCheck {
+					loopExtra = append(loopExtra,
+						fmt.Sprintf(
+							"Phase action contract: phase %d/%d has pending project verify. Next action MUST be tool_call verify(scope=\"project\"). Do not output final/no_tool until verify succeeds and phase is closed.",
+							phaseCtl.current,
+							phaseCtl.total,
+						),
+					)
+				} else {
+					loopExtra = append(loopExtra,
+						fmt.Sprintf(
+							"Phase action contract: phase %d/%d is in progress. Next action MUST be tool_call. Use ask_clarification only when essential user input is missing. Do not output final/no_tool yet.",
+							phaseCtl.current,
+							phaseCtl.total,
+						),
+					)
+				}
 			}
 		}
 		if activeRoot != "" {
@@ -524,6 +565,15 @@ func (a *App) HandleTurn(ctx context.Context, req TurnRequest, approver Approver
 		}
 	parsedAction:
 		consecutiveInvalid = 0
+		if phaseCtl.enabled && phaseCtl.hasRemainingPhases() {
+			switch action.Type {
+			case "final", "no_tool":
+				phaseNonToolAttempts++
+			default:
+				phaseNonToolAttempts = 0
+				lastPhaseGateMsg = ""
+			}
+		}
 		title := summarizePlannerTitle(action)
 		if title != "" {
 			emitEvent(ctx, Event{
@@ -625,7 +675,7 @@ func (a *App) HandleTurn(ctx context.Context, req TurnRequest, approver Approver
 				})
 				phaseFiles := phaseCtl.changedFiles()
 				completedPhase := phaseCtl.current
-				summaryRes, decisionLogPath, summaryErr := a.appendPhaseDecisionLog(ctx, completedPhase, phaseCtl.total, phaseFiles, verifyMsg.Output)
+				summaryRes, decisionLogPath, summaryErr := a.appendPhaseDecisionLog(ctx, completedPhase, phaseCtl.total, phaseFiles, activeRoot, verifyMsg.Output)
 				summaryCallID := buildID("call", fmt.Sprintf("%s|phase-log|%d", turnID, step))
 				summaryMsg := message.ToolResult{
 					ID:      summaryCallID,
@@ -651,6 +701,7 @@ func (a *App) HandleTurn(ctx context.Context, req TurnRequest, approver Approver
 					CreatedAt:  time.Now().UTC(),
 				})
 				phaseCtl.closeCurrentPhase()
+				phaseFinalizeRequested = false
 				emitPhaseStage("phase_closed")
 				turn.Audit = append(turn.Audit, message.AuditEvent{
 					Type:      "phase_completed",
@@ -665,18 +716,70 @@ func (a *App) HandleTurn(ctx context.Context, req TurnRequest, approver Approver
 				lastToolFailureHint = ""
 			}
 			if phaseCtl.hasRemainingPhases() {
-				msg := fmt.Sprintf("phase %d/%d still in progress. Continue with tool_call actions for this phase; do not finalize yet.", phaseCtl.current, phaseCtl.total)
+				msg := fmt.Sprintf(
+					"phase %d/%d is still in progress. final/no_tool is blocked in phase mode; continue with tool_call actions for this phase.",
+					phaseCtl.current,
+					phaseCtl.total,
+				)
 				emitEvent(ctx, Event{Type: "planner", Text: "phase gate: " + msg})
-				current = append(current, message.Message{
-					Role:      message.RoleAssistant,
-					Content:   msg,
-					CreatedAt: time.Now().UTC(),
-				})
-				continue
+				if msg != lastPhaseGateMsg {
+					current = append(current, message.Message{
+						Role:      message.RoleAssistant,
+						Content:   msg,
+						CreatedAt: time.Now().UTC(),
+					})
+					lastPhaseGateMsg = msg
+				}
+				lastToolFailureHint = buildPhaseGateHint(phaseCtl.current, phaseCtl.total, phaseCtl.pendingProjectCheck)
+				if phaseNonToolAttempts >= maxPhaseNonToolAttempts {
+					recoveryAction, recoveryDetail := pickPhaseRecoveryAction(
+						def.Tools,
+						phaseCtl.pendingProjectCheck,
+						true,
+						phaseCtl.changedFiles(),
+						activeRoot,
+						lastToolFailureHint,
+					)
+					emitEvent(ctx, Event{
+						Type: "planner",
+						Text: fmt.Sprintf(
+							"phase gate auto-rewrite: repeated final/no_tool (%d). forcing %s",
+							phaseNonToolAttempts,
+							recoveryDetail,
+						),
+					})
+					turn.Audit = append(turn.Audit, message.AuditEvent{
+						Type:      "phase_gate_action_rewrite",
+						Detail:    fmt.Sprintf("rewrite_to=%s attempts=%d", recoveryDetail, phaseNonToolAttempts),
+						CreatedAt: time.Now().UTC(),
+					})
+					action = recoveryAction
+					phaseRecoveryKind = recoveryActionKind(action)
+					if action.Type == "tool_call" && strings.EqualFold(strings.TrimSpace(action.Tool.Name), "verify") {
+						scope := plannedVerifyScope(action.Tool.Args)
+						if (scope == "project" || scope == "full") && !phaseCtl.pendingProjectCheck {
+							phaseFinalizeRequested = true
+						}
+					}
+					if a.metrics != nil {
+						a.metrics.recordPhaseRecoveryTrigger(phaseRecoveryKind)
+					}
+					turn.Audit = append(turn.Audit, message.AuditEvent{
+						Type:      "phase_recovery_trigger",
+						ToolName:  normalizeRecoveryKind(phaseRecoveryKind),
+						Detail:    fmt.Sprintf("kind=%s detail=%s", normalizeRecoveryKind(phaseRecoveryKind), recoveryDetail),
+						CreatedAt: time.Now().UTC(),
+					})
+					phaseNonToolAttempts = 0
+					lastPhaseGateMsg = ""
+				} else {
+					continue
+				}
 			}
 		}
 
 		if action.Type == "ask_clarification" {
+			recordPhaseRecoveryOutcome(normalizeRecoveryKind(phaseRecoveryKind) == "ask_clarification", "ask_clarification")
 			finalOutput = strings.TrimSpace(action.Content)
 			if strings.TrimSpace(action.Question) != "" {
 				finalOutput = strings.TrimSpace(action.Question)
@@ -693,6 +796,7 @@ func (a *App) HandleTurn(ctx context.Context, req TurnRequest, approver Approver
 		}
 
 		if action.Type == "no_tool" {
+			recordPhaseRecoveryOutcome(false, "resolved_to_no_tool")
 			finalOutput = strings.TrimSpace(action.Content)
 			if finalOutput == "" {
 				finalOutput = "No tool needed for this request."
@@ -706,6 +810,7 @@ func (a *App) HandleTurn(ctx context.Context, req TurnRequest, approver Approver
 		}
 
 		if action.Type == "final" {
+			recordPhaseRecoveryOutcome(false, "resolved_to_final")
 			if shouldUseWriter(action) {
 				emitEvent(ctx, Event{Type: "writer", Text: "writer phase: generating final response/patch"})
 				writerResp, writerErr := a.chatWriter(ctx, def, msgs, action, &turn)
@@ -734,6 +839,7 @@ func (a *App) HandleTurn(ctx context.Context, req TurnRequest, approver Approver
 		}
 
 		if action.Type != "tool_call" || strings.TrimSpace(action.Tool.Name) == "" {
+			recordPhaseRecoveryOutcome(false, "invalid_action_after_rewrite")
 			consecutiveInvalid++
 			if a.metrics != nil {
 				a.metrics.invalidModelOutputs.Add(1)
@@ -794,6 +900,7 @@ func (a *App) HandleTurn(ctx context.Context, req TurnRequest, approver Approver
 			sameToolCalls = 1
 		}
 		if sameToolCalls > maxConsecutiveSameToolCalls {
+			recordPhaseRecoveryOutcome(false, "repetitive_tool_call_loop")
 			err := fmt.Errorf("detected repetitive tool-call loop (%d times): %s", sameToolCalls, toolName)
 			turn.Audit = append(turn.Audit, message.AuditEvent{
 				Type:      "tool_loop_detected",
@@ -812,6 +919,7 @@ func (a *App) HandleTurn(ctx context.Context, req TurnRequest, approver Approver
 		})
 
 		if !contains(def.Tools, toolName) {
+			recordPhaseRecoveryOutcome(false, "tool_not_enabled")
 			if a.metrics != nil {
 				a.metrics.toolErrors.Add(1)
 			}
@@ -877,6 +985,7 @@ func (a *App) HandleTurn(ctx context.Context, req TurnRequest, approver Approver
 					decision = permission.DecisionDeny
 				}
 			} else {
+				recordPhaseRecoveryOutcome(false, "approval_pending")
 				apr, aprErr := a.sessions.CreateApproval(ctx, sess.ID, turnID, toolName, string(action.Tool.Args))
 				if aprErr != nil {
 					a.persistFailure(ctx, sess.ID, &turn, current, "approval_create_error", aprErr.Error())
@@ -896,6 +1005,7 @@ func (a *App) HandleTurn(ctx context.Context, req TurnRequest, approver Approver
 		}
 
 		if decision == permission.DecisionDeny {
+			recordPhaseRecoveryOutcome(false, "permission_denied")
 			if a.metrics != nil {
 				a.metrics.toolErrors.Add(1)
 			}
@@ -938,6 +1048,7 @@ func (a *App) HandleTurn(ctx context.Context, req TurnRequest, approver Approver
 		}
 		displayToolOutput := clip(toolRes.Output, a.cfg.ToolOutputDisplay)
 		if runErr != nil {
+			recordPhaseRecoveryOutcome(false, "tool_run_failed")
 			result.Error = runErr.Error()
 			emitEvent(ctx, Event{Type: "tool", Text: "tool failed: " + runErr.Error()})
 			if strings.TrimSpace(displayToolOutput) != "" {
@@ -955,10 +1066,12 @@ func (a *App) HandleTurn(ctx context.Context, req TurnRequest, approver Approver
 			lastToolFailureHint = buildToolFailureHint(toolName, runErr.Error()+"\n"+clip(result.Output, 600))
 			sameFailureSigCount = recordFailureSig(toolName, runErr.Error(), result.Output)
 		} else if strings.TrimSpace(displayToolOutput) != "" {
+			recordPhaseRecoveryOutcome(true, "tool_run_ok")
 			emitEvent(ctx, Event{Type: "tool", Text: "tool output (trimmed):\n" + displayToolOutput})
 			consecutiveToolFailures = 0
 			lastToolFailureHint = ""
 		} else {
+			recordPhaseRecoveryOutcome(true, "tool_run_ok")
 			consecutiveToolFailures = 0
 			lastToolFailureHint = ""
 		}
@@ -969,6 +1082,9 @@ func (a *App) HandleTurn(ctx context.Context, req TurnRequest, approver Approver
 			Content:    toResultJSON(result),
 			CreatedAt:  time.Now().UTC(),
 		})
+		if runErr == nil && !strings.EqualFold(toolName, "verify") {
+			phaseFinalizeRequested = false
+		}
 
 		if runErr == nil && phaseCtl.enabled && len(result.Writes) > 0 {
 			if root := inferActiveRootFromWrites(result.Writes); root != "" {
@@ -1059,11 +1175,20 @@ func (a *App) HandleTurn(ctx context.Context, req TurnRequest, approver Approver
 			continue
 		}
 
-		if phaseCtl.enabled && toolName == "verify" && plannedVerifyScope(action.Tool.Args) == "project" && phaseCtl.pendingProjectCheck {
+		verifyScope := plannedVerifyScope(action.Tool.Args)
+		if phaseCtl.enabled && toolName == "verify" && (verifyScope == "project" || verifyScope == "full") {
+			allowPhaseClose := phaseCtl.pendingProjectCheck || phaseFinalizeRequested
+			if !allowPhaseClose {
+				emitEvent(ctx, Event{
+					Type: "stage",
+					Text: "verify passed but phase close not triggered (no pending writes and no finalize request)",
+				})
+				continue
+			}
 			setPhaseStage(phaseStageSummary, "project_verify_passed")
 			phaseFiles := phaseCtl.changedFiles()
 			completedPhase := phaseCtl.current
-			summaryRes, decisionLogPath, summaryErr := a.appendPhaseDecisionLog(ctx, completedPhase, phaseCtl.total, phaseFiles, result.Output)
+			summaryRes, decisionLogPath, summaryErr := a.appendPhaseDecisionLog(ctx, completedPhase, phaseCtl.total, phaseFiles, activeRoot, result.Output)
 			summaryCallID := buildID("call", fmt.Sprintf("%s|phase-log|%d", turnID, step))
 			summaryMsg := message.ToolResult{
 				ID:      summaryCallID,
@@ -1089,6 +1214,7 @@ func (a *App) HandleTurn(ctx context.Context, req TurnRequest, approver Approver
 				CreatedAt:  time.Now().UTC(),
 			})
 			phaseCtl.closeCurrentPhase()
+			phaseFinalizeRequested = false
 			emitPhaseStage("phase_closed")
 			turn.Audit = append(turn.Audit, message.AuditEvent{
 				Type:      "phase_completed",
@@ -1698,9 +1824,159 @@ func buildToolFailureHint(toolName, errText string) string {
 		"Tool failure feedback:\n" +
 			"- Last tool: " + fallbackText(toolName, "<unknown>") + "\n" +
 			"- Error: " + fallbackText(errText, "<none>") + "\n" +
-			"- Re-plan now: fix args, choose a better tool, or return ask_clarification/no_tool.\n" +
+			"- Re-plan now: fix args, choose a better tool, or ask_clarification only if essential user input is missing.\n" +
 			"- Do not repeat the same failing tool call with unchanged args.",
 	)
+}
+
+func buildPhaseGateHint(current, total int, pendingVerify bool) string {
+	if pendingVerify {
+		return strings.TrimSpace(fmt.Sprintf(
+			"Phase gate feedback:\n- Current phase: %d/%d\n- Phase finalization is blocked until verify(scope=\"project\") succeeds.\n- Next action must be tool_call verify(scope=\"project\").\n- Do not output final/no_tool yet.",
+			current,
+			total,
+		))
+	}
+	return strings.TrimSpace(fmt.Sprintf(
+		"Phase gate feedback:\n- Current phase: %d/%d\n- Phase is still in progress.\n- Next action must be tool_call for concrete implementation work.\n- Do not output final/no_tool yet.",
+		current,
+		total,
+	))
+}
+
+var (
+	reFailurePathWithLine = regexp.MustCompile(`([A-Za-z]:[\\/][^:\r\n]+?\.[A-Za-z0-9_]+|[A-Za-z0-9_./\\-]+\.[A-Za-z0-9_]+):\d+(?::\d+)?`)
+	reStandaloneAbsPath   = regexp.MustCompile(`([A-Za-z]:[\\/][^ \t\r\n'"]+\.[A-Za-z0-9_]+)`)
+)
+
+func pickPhaseRecoveryAction(
+	allowedTools []string,
+	pendingVerify bool,
+	preferFinalizeVerify bool,
+	changedFiles []string,
+	activeRoot string,
+	lastFailureHint string,
+) (modelAction, string) {
+	buildToolCall := func(name string, args map[string]any) modelAction {
+		raw, _ := json.Marshal(args)
+		act := modelAction{Type: "tool_call"}
+		act.Tool.Name = name
+		act.Tool.Args = raw
+		return act
+	}
+	canUse := func(name string) bool { return contains(allowedTools, name) }
+	basePath := verifyBasePath(activeRoot)
+
+	if pendingVerify && canUse("verify") {
+		return buildToolCall("verify", map[string]any{
+			"scope":         "project",
+			"path":          basePath,
+			"changed_files": changedFiles,
+		}), fmt.Sprintf("tool_call.verify(scope=project,path=%s)", basePath)
+	}
+
+	if preferFinalizeVerify && canUse("verify") {
+		return buildToolCall("verify", map[string]any{
+			"scope":         "project",
+			"path":          basePath,
+			"changed_files": changedFiles,
+		}), fmt.Sprintf("tool_call.verify(scope=project,path=%s)", basePath)
+	}
+
+	if canUse("read") {
+		if path := pickPhaseRecoveryReadPath(changedFiles, activeRoot, lastFailureHint); path != "" {
+			return buildToolCall("read", map[string]any{
+				"path":       path,
+				"start_line": 1,
+				"end_line":   220,
+			}), fmt.Sprintf("tool_call.read(path=%s)", path)
+		}
+	}
+
+	if canUse("list") {
+		return buildToolCall("list", map[string]any{
+			"path": basePath,
+		}), fmt.Sprintf("tool_call.list(path=%s)", basePath)
+	}
+
+	if canUse("verify") {
+		return buildToolCall("verify", map[string]any{
+			"scope":         "changed_files",
+			"path":          basePath,
+			"changed_files": changedFiles,
+		}), fmt.Sprintf("tool_call.verify(scope=changed_files,path=%s)", basePath)
+	}
+
+	question := "Phase is still in progress but no executable tools are available. Please enable at least one of: list/read/verify."
+	return modelAction{
+			Type:     "ask_clarification",
+			Content:  question,
+			Question: question,
+		},
+		"ask_clarification(no_recovery_tool_available)"
+}
+
+func recoveryActionKind(action modelAction) string {
+	switch strings.ToLower(strings.TrimSpace(action.Type)) {
+	case "tool_call":
+		name := strings.ToLower(strings.TrimSpace(action.Tool.Name))
+		if name == "" {
+			return "other"
+		}
+		return "tool_call." + name
+	case "ask_clarification":
+		return "ask_clarification"
+	default:
+		return "other"
+	}
+}
+
+func pickPhaseRecoveryReadPath(changedFiles []string, activeRoot string, lastFailureHint string) string {
+	for _, p := range changedFiles {
+		p = normalizeRelPath(p)
+		if p != "" && !strings.HasSuffix(strings.ToLower(p), "/") {
+			return p
+		}
+	}
+	raw := extractFailurePathCandidate(lastFailureHint)
+	if raw == "" {
+		return ""
+	}
+	return normalizePhaseRecoveryPath(raw, activeRoot)
+}
+
+func extractFailurePathCandidate(hint string) string {
+	hint = strings.TrimSpace(strings.ReplaceAll(hint, "\r\n", "\n"))
+	if hint == "" {
+		return ""
+	}
+	if m := reFailurePathWithLine.FindStringSubmatch(hint); len(m) > 1 {
+		return strings.TrimSpace(m[1])
+	}
+	if m := reStandaloneAbsPath.FindStringSubmatch(hint); len(m) > 1 {
+		return strings.TrimSpace(m[1])
+	}
+	return ""
+}
+
+func normalizePhaseRecoveryPath(path string, activeRoot string) string {
+	path = strings.TrimSpace(path)
+	path = strings.Trim(path, "`'\"")
+	if path == "" {
+		return ""
+	}
+	path = strings.TrimSuffix(path, ":")
+	path = filepath.ToSlash(path)
+	if strings.HasPrefix(path, "./") {
+		path = strings.TrimPrefix(path, "./")
+	}
+	activeRoot = normalizeRelPath(activeRoot)
+	if activeRoot != "" && activeRoot != "." && !filepath.IsAbs(path) {
+		if !strings.HasPrefix(strings.ToLower(path), strings.ToLower(activeRoot)+"/") {
+			path = filepath.ToSlash(filepath.Join(activeRoot, path))
+		}
+	}
+	return normalizeRelPath(path)
 }
 
 func mergeContinuation(previous, next string) string {
@@ -2287,6 +2563,7 @@ func (a *App) appendPhaseDecisionLog(
 	phaseNumber int,
 	totalPhases int,
 	phaseFiles []string,
+	activeRoot string,
 	verifyOutput string,
 ) (tool.Result, string, error) {
 	writeTool, err := a.tools.Get("write_file")
@@ -2294,6 +2571,13 @@ func (a *App) appendPhaseDecisionLog(
 		return tool.Result{}, "", fmt.Errorf("write_file tool unavailable: %w", err)
 	}
 	path := inferDecisionLogPathFromWrites(phaseFiles)
+	if len(phaseFiles) == 0 {
+		root := verifyBasePath(activeRoot)
+		root = normalizeRelPath(root)
+		if root != "" && root != "." {
+			path = normalizeRelPath(filepath.ToSlash(filepath.Join(root, "docs", "decision-log.md")))
+		}
+	}
 	content := buildPhaseSummaryEntry(phaseNumber, totalPhases, phaseFiles, verifyOutput)
 	args, _ := json.Marshal(map[string]any{
 		"path":    path,

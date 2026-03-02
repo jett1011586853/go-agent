@@ -1,0 +1,253 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Trade-Lab Dashboard</title>
+    <style>
+        * { margin: 0; padding: 0; box-sizing: border-box; }
+        body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; background: #1a1a2e; color: #eee; }
+        .container { max-width: 1400px; margin: 0 auto; padding: 20px; }
+        header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 20px; }
+        h1 { color: #00d4ff; }
+        .status { padding: 5px 15px; border-radius: 20px; font-size: 14px; }
+        .status.ok { background: #00c853; }
+        .status.warning { background: #ff9800; }
+        .status.error { background: #f44336; }
+        .grid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 20px; margin-bottom: 20px; }
+        .card { background: #16213e; border-radius: 10px; padding: 20px; }
+        .card h2 { font-size: 16px; color: #888; margin-bottom: 10px; }
+        .card .value { font-size: 32px; font-weight: bold; color: #00d4ff; }
+        .card .change { font-size: 14px; margin-top: 5px; }
+        .change.positive { color: #00c853; }
+        .change.negative { color: #f44336; }
+        .panel { background: #16213e; border-radius: 10px; padding: 20px; margin-bottom: 20px; }
+        .panel h2 { margin-bottom: 15px; color: #00d4ff; }
+        table { width: 100%; border-collapse: collapse; }
+        th, td { padding: 12px; text-align: left; border-bottom: 1px solid #2a2a4a; }
+        th { color: #888; font-weight: normal; }
+        .btn { padding: 8px 16px; border: none; border-radius: 5px; cursor: pointer; font-size: 14px; }
+        .btn-primary { background: #00d4ff; color: #1a1a2e; }
+        .btn-danger { background: #f44336; color: white; }
+        .btn:hover { opacity: 0.8; }
+        .chart-placeholder { height: 200px; background: linear-gradient(180deg, #16213e 0%, #1a1a2e 100%); display: flex; align-items: center; justify-content: center; color: #666; }
+        .alert { padding: 10px 15px; border-radius: 5px; margin-bottom: 10px; }
+        .alert-warning { background: #ff980020; border-left: 3px solid #ff9800; }
+        .alert-error { background: #f4433620; border-left: 3px solid #f44336; }
+        .tabs { display: flex; gap: 10px; margin-bottom: 15px; }
+        .tab { padding: 10px 20px; background: #2a2a4a; border-radius: 5px; cursor: pointer; }
+        .tab.active { background: #00d4ff; color: #1a1a2e; }
+        #tasks-list { max-height: 300px; overflow-y: auto; }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <header>
+            <h1>Trade-Lab</h1>
+            <div>
+                <span class="status ok" id="risk-status">风控正常</span>
+            </div>
+        </header>
+
+        <div class="grid">
+            <div class="card">
+                <h2>总权益</h2>
+                <div class="value" id="total-equity">¥100,000</div>
+                <div class="change positive" id="equity-change">+0.00%</div>
+            </div>
+            <div class="card">
+                <h2>今日盈亏</h2>
+                <div class="value" id="daily-pnl">¥0</div>
+                <div class="change" id="pnl-change">--</div>
+            </div>
+            <div class="card">
+                <h2>运行任务</h2>
+                <div class="value" id="running-tasks">0</div>
+                <div class="change">活跃策略</div>
+            </div>
+        </div>
+
+        <div class="grid">
+            <div class="panel" style="grid-column: span 2;">
+                <h2>净值曲线</h2>
+                <div class="chart-placeholder" id="equity-chart">
+                    [净值曲线图表区域]
+                </div>
+            </div>
+            <div class="panel">
+                <h2>风险告警</h2>
+                <div id="alerts">
+                    <div class="alert alert-warning" style="display:none;">暂无告警</div>
+                </div>
+                <div style="margin-top: 10px;">
+                    <p style="color: #888; font-size: 14px;">持仓上限: <span id="position-limit">--</span></p>
+                    <p style="color: #888; font-size: 14px;">日损限制: <span id="daily-limit">--</span></p>
+                    <p style="color: #888; font-size: 14px;">熔断状态: <span id="circuit-breaker">正常</span></p>
+                </div>
+            </div>
+        </div>
+
+        <div class="panel">
+            <h2>任务管理</h2>
+            <div class="tabs">
+                <div class="tab active" onclick="showTab('tasks')">任务列表</div>
+                <div class="tab" onclick="showTab('create')">创建任务</div>
+            </div>
+            <div id="tasks-tab">
+                <table>
+                    <thead>
+                        <tr>
+                            <th>任务ID</th>
+                            <th>策略</th>
+                            <th>状态</th>
+                            <th>开始时间</th>
+                            <th>操作</th>
+                        </tr>
+                    </thead>
+                    <tbody id="tasks-list">
+                        <tr><td colspan="5" style="text-align: center; color: #666;">暂无任务</td></tr>
+                    </tbody>
+                </table>
+            </div>
+            <div id="create-tab" style="display: none;">
+                <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 20px;">
+                    <div>
+                        <label style="display: block; margin-bottom: 5px; color: #888;">策略类型</label>
+                        <select id="strategy-select" style="width: 100%; padding: 10px; background: #2a2a4a; border: none; color: #eee; border-radius: 5px;">
+                            <option value="sma">SMA 双均线</option>
+                            <option value="bollinger">布林带</option>
+                            <option value="momentum">动量策略</option>
+                        </select>
+                    </div>
+                    <div>
+                        <label style="display: block; margin-bottom: 5px; color: #888;">参数配置</label>
+                        <input type="text" id="strategy-params" placeholder='{"short_period": 5, "long_period": 10}' style="width: 100%; padding: 10px; background: #2a2a4a; border: none; color: #eee; border-radius: 5px;">
+                    </div>
+                </div>
+                <button class="btn btn-primary" style="margin-top: 15px;" onclick="createTask()">创建任务</button>
+            </div>
+        </div>
+
+        <div class="panel">
+            <h2>策略列表</h2>
+            <table>
+                <thead>
+                    <tr>
+                        <th>策略名称</th>
+                        <th>类型</th>
+                        <th>参数</th>
+                        <th>状态</th>
+                        <th>操作</th>
+                    </tr>
+                </thead>
+                <tbody id="strategies-list">
+                    <tr>
+                        <td>SMA 双均线</td>
+                        <td>趋势跟踪</td>
+                        <td>short_period, long_period</td>
+                        <td><span class="status ok">可用</span></td>
+                        <td><button class="btn btn-primary" onclick="startStrategy('sma')">启动</button></td>
+                    </tr>
+                    <tr>
+                        <td>布林带</td>
+                        <td>均值回归</td>
+                        <td>period, std_dev</td>
+                        <td><span class="status ok">可用</span></td>
+                        <td><button class="btn btn-primary" onclick="startStrategy('bollinger')">启动</button></td>
+                    </tr>
+                    <tr>
+                        <td>动量策略</td>
+                        <td>动量</td>
+                        <td>period</td>
+                        <td><span class="status ok">可用</span></td>
+                        <td><button class="btn btn-primary" onclick="startStrategy('momentum')">启动</button></td>
+                    </tr>
+                </tbody>
+            </table>
+        </div>
+    </div>
+
+    <script>
+        const API_BASE = '/api/v1';
+
+        async function fetchAPI(endpoint) {
+            try {
+                const res = await fetch(API_BASE + endpoint);
+                return await res.json();
+            } catch (e) {
+                console.error('API error:', e);
+                return null;
+            }
+        }
+
+        async function loadDashboard() {
+            const summary = await fetchAPI('/dashboard/summary');
+            if (summary) {
+                document.getElementById('running-tasks').textContent = summary.running_tasks || 0;
+            }
+
+            const risk = await fetchAPI('/risk/status');
+            if (risk) {
+                document.getElementById('daily-pnl').textContent = '¥' + (risk.daily_pnl || 0).toFixed(2);
+            }
+
+            const tasks = await fetchAPI('/tasks');
+            if (tasks && tasks.tasks) {
+                const tbody = document.getElementById('tasks-list');
+                if (tasks.tasks.length === 0) {
+                    tbody.innerHTML = '<tr><td colspan="5" style="text-align: center; color: #666;">暂无任务</td></tr>';
+                } else {
+                    tbody.innerHTML = tasks.tasks.map(t => `
+                        <tr>
+                            <td>${t.id}</td>
+                            <td>${t.strategy}</td>
+                            <td><span class="status ${t.status === 'completed' ? 'ok' : 'warning'}">${t.status}</span></td>
+                            <td>--</td>
+                            <td><button class="btn btn-danger" onclick="deleteTask('${t.id}')">删除</button></td>
+                        </tr>
+                    `).join('');
+                }
+            }
+        }
+
+        async function createTask() {
+            const strategy = document.getElementById('strategy-select').value;
+            const paramsText = document.getElementById('strategy-params').value || '{}';
+            try {
+                const params = JSON.parse(paramsText);
+                const res = await fetch(API_BASE + '/tasks', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ strategy, params })
+                });
+                if (res.ok) {
+                    alert('任务创建成功');
+                    loadDashboard();
+                }
+            } catch (e) {
+                alert('参数格式错误');
+            }
+        }
+
+        async function deleteTask(id) {
+            await fetch(API_BASE + '/tasks/' + id, { method: 'DELETE' });
+            loadDashboard();
+        }
+
+        async function startStrategy(name) {
+            await fetchAPI('/strategies/' + name + '/start');
+            alert('策略已启动: ' + name);
+        }
+
+        function showTab(tab) {
+            document.getElementById('tasks-tab').style.display = tab === 'tasks' ? 'block' : 'none';
+            document.getElementById('create-tab').style.display = tab === 'create' ? 'block' : 'none';
+            document.querySelectorAll('.tab').forEach(t => t.classList.remove('active'));
+            event.target.classList.add('active');
+        }
+
+        loadDashboard();
+        setInterval(loadDashboard, 5000);
+    </script>
+</body>
+</html>

@@ -10,9 +10,12 @@ import (
 	"time"
 
 	"github.com/gin-gonic/gin"
+	"trade-lab/internal/api"
 	"trade-lab/internal/config"
+	"trade-lab/internal/eventbus"
 	"trade-lab/internal/health"
 	"trade-lab/internal/logger"
+	"trade-lab/internal/risk"
 )
 
 func main() {
@@ -35,6 +38,16 @@ func main() {
 		"db_driver", cfg.DB.Driver,
 	)
 
+	// Initialize event bus
+	bus := eventbus.NewInMemoryBus(10000)
+
+	// Initialize risk controller
+	riskState := risk.NewState()
+	riskCtrl := risk.NewController(riskState, bus)
+
+	// Initialize API handlers
+	handlers := api.NewHandlers(bus, riskCtrl)
+
 	// Setup HTTP server
 	gin.SetMode(gin.ReleaseMode)
 	if cfg.LogLevel == "debug" {
@@ -54,7 +67,12 @@ func main() {
 		v1.GET("/ping", func(c *gin.Context) {
 			c.JSON(http.StatusOK, gin.H{"message": "pong"})
 		})
+		handlers.RegisterRoutes(v1)
 	}
+
+	// Static files for frontend
+	router.Static("/assets", "./web/assets")
+	router.StaticFile("/", "./web/index.html")
 
 	srv := &http.Server{
 		Addr: cfg.HTTPAddr,

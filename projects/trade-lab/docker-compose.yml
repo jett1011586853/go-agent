@@ -1,0 +1,56 @@
+version: '3.8'
+
+services:
+  trade-lab:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    ports:
+      - "8080:8080"
+    environment:
+      - TL_PROFILE=production
+      - TL_LOG_LEVEL=info
+      - TL_HTTP_ADDR=:8080
+      - TL_DB_DRIVER=sqlite
+      - TL_DB_DSN=/app/data/trade-lab.db
+    volumes:
+      - ./data:/app/data
+      - ./config:/app/config:ro
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "wget", "--no-verbose", "--tries=1", "--spider", "http://localhost:8080/health"]
+      interval: 30s
+      timeout: 3s
+      retries: 3
+      start_period: 5s
+
+  # PostgreSQL for production mode
+  postgres:
+    image: postgres:15-alpine
+    environment:
+      - POSTGRES_USER=tradelab
+      - POSTGRES_PASSWORD=tradelab123
+      - POSTGRES_DB=tradelab
+    volumes:
+      - postgres-data:/var/lib/postgresql/data
+    ports:
+      - "5432:5432"
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U tradelab"]
+      interval: 10s
+      timeout: 3s
+      retries: 3
+
+  # Redis for future caching
+  redis:
+    image: redis:7-alpine
+    ports:
+      - "6379:6379"
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 3s
+      retries: 3
+
+volumes:
+  postgres-data:
