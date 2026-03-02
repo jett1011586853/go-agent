@@ -29,11 +29,17 @@ type ToolCall struct {
 }
 
 type ToolResult struct {
-	ID      string `json:"id"`
-	Name    string `json:"name"`
-	Output  string `json:"output,omitempty"`
-	Error   string `json:"error,omitempty"`
-	Allowed string `json:"allowed,omitempty"` // allow|ask|deny
+	ID      string        `json:"id"`
+	Name    string        `json:"name"`
+	Output  string        `json:"output,omitempty"`
+	Error   string        `json:"error,omitempty"`
+	Allowed string        `json:"allowed,omitempty"` // allow|ask|deny
+	Writes  []WriteRecord `json:"writes,omitempty"`
+}
+
+type WriteRecord struct {
+	Path string `json:"path"`
+	Op   string `json:"op"` // create|modify|append|mkdir|delete
 }
 
 type AuditEvent struct {

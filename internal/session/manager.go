@@ -6,6 +6,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
+	"path/filepath"
 	"slices"
 	"strings"
 	"time"
@@ -26,6 +27,7 @@ type Session struct {
 	ArchivedTurns  []message.Turn `json:"archived_turns,omitempty"`
 	WorkingSummary string         `json:"working_summary,omitempty"`
 	PinnedFacts    []string       `json:"pinned_facts,omitempty"`
+	ActiveRoot     string         `json:"active_root,omitempty"`
 	CreatedAt      time.Time      `json:"created_at"`
 	UpdatedAt      time.Time      `json:"updated_at"`
 }
@@ -107,6 +109,23 @@ func (m *Manager) AppendTurn(ctx context.Context, sessionID string, turn message
 	s.Turns = append(s.Turns, turn)
 	s.UpdatedAt = time.Now().UTC()
 	m.maybeCompact(&s)
+	if err := m.save(ctx, s); err != nil {
+		return Session{}, err
+	}
+	return s, nil
+}
+
+func (m *Manager) UpdateActiveRoot(ctx context.Context, sessionID, activeRoot string) (Session, error) {
+	s, err := m.load(ctx, sessionID)
+	if err != nil {
+		return Session{}, err
+	}
+	next := normalizeActiveRoot(activeRoot)
+	if s.ActiveRoot == next {
+		return s, nil
+	}
+	s.ActiveRoot = next
+	s.UpdatedAt = time.Now().UTC()
 	if err := m.save(ctx, s); err != nil {
 		return Session{}, err
 	}
@@ -341,6 +360,21 @@ func estimateSessionTokens(s Session) int {
 	}
 	// Approximation: mixed-language prompts are usually within 1 token per 3-4 chars.
 	return (totalRunes + 3) / 4
+}
+
+func normalizeActiveRoot(path string) string {
+	path = strings.TrimSpace(path)
+	if path == "" {
+		return ""
+	}
+	path = filepath.ToSlash(filepath.Clean(path))
+	if strings.HasPrefix(path, "./") {
+		path = strings.TrimPrefix(path, "./")
+	}
+	if path == "." {
+		return ""
+	}
+	return path
 }
 
 func buildID(prefix, seed string) string {

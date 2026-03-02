@@ -70,6 +70,30 @@ func TestCompactionByTokenThreshold(t *testing.T) {
 	}
 }
 
+func TestUpdateActiveRootPersists(t *testing.T) {
+	store := newStore(t)
+	mgr := NewManager(store, 6, 0)
+
+	sess, err := mgr.CreateSession(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	updated, err := mgr.UpdateActiveRoot(context.Background(), sess.ID, `projects\trade-lab`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if updated.ActiveRoot != "projects/trade-lab" {
+		t.Fatalf("expected normalized active_root, got %q", updated.ActiveRoot)
+	}
+	loaded, err := mgr.GetSession(context.Background(), sess.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if loaded.ActiveRoot != "projects/trade-lab" {
+		t.Fatalf("expected persisted active_root, got %q", loaded.ActiveRoot)
+	}
+}
+
 func sampleTurn(input string) message.Turn {
 	now := time.Now().UTC()
 	return message.Turn{

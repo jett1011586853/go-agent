@@ -80,6 +80,36 @@ func TestNVIDIAProviderNoRetryForBadRequest(t *testing.T) {
 	}
 }
 
+func TestNVIDIAProviderRetryOnDeadlineExceeded(t *testing.T) {
+	var calls int32
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		n := atomic.AddInt32(&calls, 1)
+		if n == 1 {
+			time.Sleep(150 * time.Millisecond)
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"choices":[{"message":{"content":"ok-after-timeout-retry"}}]}`))
+	}))
+	defer srv.Close()
+
+	p := NewNVIDIAProvider(srv.URL, "test-key", 80*time.Millisecond, 1, false, true, false)
+	resp, err := p.Chat(context.Background(), ChatRequest{
+		Model:       "z-ai/glm5",
+		Messages:    []ChatMessage{{Role: "user", Content: "hi"}},
+		Temperature: 0.1,
+		MaxTokens:   128,
+	})
+	if err != nil {
+		t.Fatalf("chat failed: %v", err)
+	}
+	if resp.Content != "ok-after-timeout-retry" {
+		t.Fatalf("unexpected content: %q", resp.Content)
+	}
+	if got := atomic.LoadInt32(&calls); got < 2 {
+		t.Fatalf("expected retry after timeout, got calls=%d", got)
+	}
+}
+
 func TestNVIDIAProviderStreamWithReasoning(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		raw, _ := io.ReadAll(r.Body)

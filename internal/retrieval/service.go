@@ -8,12 +8,14 @@ import (
 	"errors"
 	"fmt"
 	"io/fs"
+	"log"
 	"math"
 	"os"
 	"path/filepath"
 	"sort"
 	"strings"
 	"sync"
+	"time"
 	"unicode/utf8"
 )
 
@@ -83,9 +85,18 @@ type Service struct {
 	reranker Reranker
 	opts     Options
 
-	mu     sync.RWMutex
-	chunks []Chunk
+	mu                 sync.RWMutex
+	chunks             []Chunk
+	rerankFailures     int
+	rerankDisabledTill time.Time
+	notices            []string
 }
+
+const (
+	rerankFailureThreshold = 3
+	rerankDisableDuration  = 60 * time.Second
+	activeRootScoreBoost   = 0.08
+)
 
 func NewService(embedder Embedder, opts Options) *Service {
 	o := normalizeOptions(opts)
@@ -154,17 +165,22 @@ func (s *Service) Retrieve(ctx context.Context, query string) (string, error) {
 	if query == "" {
 		return "", nil
 	}
+	activeRoot, queryText := parseActiveRootHint(query)
+	if queryText == "" {
+		queryText = query
+	}
 
 	s.mu.RLock()
 	chunks := append([]Chunk(nil), s.chunks...)
 	reranker := s.reranker
 	opts := s.opts
+	rerankDisabledTill := s.rerankDisabledTill
 	s.mu.RUnlock()
 	if len(chunks) == 0 {
 		return "", nil
 	}
 
-	vecs, err := s.embedder.Embed(ctx, []string{query}, "query")
+	vecs, err := s.embedder.Embed(ctx, []string{queryText}, "query")
 	if err != nil {
 		return "", fmt.Errorf("embed query: %w", err)
 	}
@@ -176,7 +192,10 @@ func (s *Service) Retrieve(ctx context.Context, query string) (string, error) {
 	if opts.RerankCandidateK > candidateK {
 		candidateK = opts.RerankCandidateK
 	}
-	scored := topKWithDiversity(vecs[0], chunks, candidateK, opts.PerFileLimit)
+	scored := topKWithDiversity(vecs[0], chunks, candidateK, opts.PerFileLimit, activeRoot)
+	if reranker != nil && time.Now().Before(rerankDisabledTill) {
+		reranker = nil
+	}
 	if reranker != nil && len(scored) > 1 {
 		docs := make([]string, 0, len(scored))
 		for _, it := range scored {
@@ -187,11 +206,15 @@ func (s *Service) Retrieve(ctx context.Context, query string) (string, error) {
 				strings.TrimSpace(it.Chunk.Text),
 			))
 		}
-		order, rerankErr := reranker.Rerank(ctx, query, docs, opts.TopK)
+		order, rerankErr := reranker.Rerank(ctx, queryText, docs, opts.TopK)
 		if rerankErr == nil && len(order) > 0 {
+			s.resetRerankCircuit()
 			scored = reorderScoredByIndexes(scored, order, opts.TopK)
-		} else if len(scored) > opts.TopK {
-			scored = scored[:opts.TopK]
+		} else {
+			s.noteRerankFailure(rerankErr)
+			if len(scored) > opts.TopK {
+				scored = scored[:opts.TopK]
+			}
 		}
 	} else if len(scored) > opts.TopK {
 		scored = scored[:opts.TopK]
@@ -205,6 +228,44 @@ func (s *Service) ChunkCount() int {
 	return len(s.chunks)
 }
 
+func (s *Service) noteRerankFailure(err error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.rerankFailures++
+	if s.rerankFailures < rerankFailureThreshold {
+		return
+	}
+	s.rerankDisabledTill = time.Now().Add(rerankDisableDuration)
+	s.rerankFailures = 0
+	notice := fmt.Sprintf("rerank disabled for %s due to failures", rerankDisableDuration.String())
+	s.notices = append(s.notices, notice)
+	if err != nil {
+		log.Printf("retrieval rerank disabled for %s due to failures: %v", rerankDisableDuration.String(), err)
+	} else {
+		log.Printf("retrieval rerank disabled for %s due to repeated failures", rerankDisableDuration.String())
+	}
+}
+
+func (s *Service) resetRerankCircuit() {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.rerankFailures = 0
+	if !s.rerankDisabledTill.IsZero() && time.Now().After(s.rerankDisabledTill) {
+		s.rerankDisabledTill = time.Time{}
+	}
+}
+
+func (s *Service) ConsumeNotices() []string {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if len(s.notices) == 0 {
+		return nil
+	}
+	out := append([]string(nil), s.notices...)
+	s.notices = nil
+	return out
+}
+
 func (s *Service) OnToolResult(ctx context.Context, toolName string, args json.RawMessage, runErr error) error {
 	if runErr != nil {
 		return nil
@@ -212,7 +273,7 @@ func (s *Service) OnToolResult(ctx context.Context, toolName string, args json.R
 	toolName = strings.ToLower(strings.TrimSpace(toolName))
 	var paths []string
 	switch toolName {
-	case "edit", "patch":
+	case "edit", "patch", "write_file", "mkdir":
 		var in struct {
 			Path string `json:"path"`
 		}
@@ -594,18 +655,23 @@ func loadJSONL(path string) ([]Chunk, error) {
 	return out, nil
 }
 
-func topKWithDiversity(queryVec []float64, chunks []Chunk, k int, perFile int) []ScoredChunk {
+func topKWithDiversity(queryVec []float64, chunks []Chunk, k int, perFile int, activeRoot string) []ScoredChunk {
 	if len(queryVec) == 0 || len(chunks) == 0 || k <= 0 {
 		return nil
 	}
+	activeRoot = normalizeRelPath(activeRoot)
 	all := make([]ScoredChunk, 0, len(chunks))
 	for _, ch := range chunks {
 		if len(ch.Vec) == 0 {
 			continue
 		}
+		score := cosine(queryVec, ch.Vec)
+		if activeRoot != "" && pathWithinPrefix(ch.Path, activeRoot) {
+			score += activeRootScoreBoost
+		}
 		all = append(all, ScoredChunk{
 			Chunk: ch,
-			Score: cosine(queryVec, ch.Vec),
+			Score: score,
 		})
 	}
 	sort.Slice(all, func(i, j int) bool {
@@ -713,6 +779,34 @@ func cosine(a, b []float64) float64 {
 		return 0
 	}
 	return dot / (math.Sqrt(na) * math.Sqrt(nb))
+}
+
+func parseActiveRootHint(query string) (string, string) {
+	query = strings.ReplaceAll(query, "\r\n", "\n")
+	if strings.TrimSpace(query) == "" {
+		return "", ""
+	}
+	lines := strings.Split(query, "\n")
+	activeRoot := ""
+	out := make([]string, 0, len(lines))
+	for _, line := range lines {
+		trimmed := strings.TrimSpace(line)
+		if strings.HasPrefix(strings.ToLower(trimmed), "active_root:") {
+			activeRoot = normalizeRelPath(strings.TrimSpace(trimmed[len("active_root:"):]))
+			continue
+		}
+		out = append(out, line)
+	}
+	return activeRoot, strings.TrimSpace(strings.Join(out, "\n"))
+}
+
+func pathWithinPrefix(path, prefix string) bool {
+	path = normalizeRelPath(path)
+	prefix = normalizeRelPath(prefix)
+	if path == "" || prefix == "" {
+		return false
+	}
+	return path == prefix || strings.HasPrefix(path, prefix+"/")
 }
 
 func isLikelySourceFile(name string) bool {

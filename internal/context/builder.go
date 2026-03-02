@@ -116,7 +116,7 @@ func (b *Builder) systemPrompt(agentName string, toolSchemas map[string]json.Raw
 	if len(toolsText) == 0 {
 		toolsText = append(toolsText, "- no tools")
 	}
-	actionTypes := []string{"final", "tool_call"}
+	actionTypes := []string{"final", "tool_call", "ask_clarification", "no_tool"}
 	return fmt.Sprintf(`You are OpenCode-style coding agent "%s".
 You must reply with exactly one JSON object and nothing else.
 Allowed response types: %s
@@ -136,6 +136,20 @@ For final answer:
   "type": "final",
   "content": "final user-facing answer",
   "next_steps": ["optional"],
+  "thinking": "short reason"
+}
+
+For clarification question:
+{
+  "type": "ask_clarification",
+  "content": "single concise clarification question",
+  "thinking": "short reason"
+}
+
+For direct no-tool response:
+{
+  "type": "no_tool",
+  "content": "direct answer without tools",
   "thinking": "short reason"
 }
 

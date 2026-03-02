@@ -11,17 +11,26 @@ embedding_per_file_max: 3
 embedding_chunk_lines: 260
 embedding_chunk_overlap: 50
 embedding_batch_size: 12
-embedding_max_context_chars: 28000
+embedding_max_context_chars: 12000
 embedding_ignore_dirs: [".git", ".run", "node_modules", "dist", "build", "vendor", "bin"]
 embedding_init_timeout: 8m
 rerank_enabled: true
 rerank_base_url: http://localhost:8002
 rerank_model: nvidia/llama-3.2-nv-rerankqa-1b-v2
 rerank_candidate_k: 20
+skills_enabled: true
+skills_dirs: ["data/superpowers/skills", "data/anthropic/skills", "data/gsd/get-shit-done/workflows"]
+skills_bootstrap: "using-superpowers"
+skills_auto_load: true
+skills_auto_load_k: 2
+skills_candidate_k: 12
+skills_max_context_chars: 4000
 compaction_turns: 30
 compaction_token_threshold: 12000
 context_turn_window: 10
-tool_output_limit: 50000
+phase_max_files: 5
+tool_output_model_limit: 12000
+tool_output_display_limit: 50000
 request_timeout: 180s
 turn_timeout: 90m
 oneshot_timeout: 60m
@@ -37,20 +46,45 @@ agents:
   build:
     mode: primary
     model: z-ai/glm5
-    tools: ["list", "glob", "grep", "read", "edit", "patch", "bash", "webfetch", "websearch"]
+    tools: ["list", "glob", "grep", "read", "mkdir", "write_file", "edit", "patch", "apply_diff", "verify", "bash", "webfetch", "websearch", "skill"]
     permissions:
-      "*": allow
+      list: allow
+      glob: allow
+      grep: allow
+      read: allow
+      skill: allow
+      verify: allow
+      mkdir: ask
+      write_file: ask
+      edit: ask
+      patch: ask
+      apply_diff: ask
+      bash: ask
+      webfetch: ask
+      websearch: ask
+      "*": deny
     temperature: 0.2
     max_tokens: 16383
 
   plan:
     mode: primary
     model: z-ai/glm5
-    tools: ["list", "glob", "grep", "read", "edit", "patch", "bash", "webfetch", "websearch"]
+    tools: ["list", "glob", "grep", "read", "mkdir", "write_file", "edit", "patch", "apply_diff", "verify", "bash", "webfetch", "websearch", "skill"]
     permissions:
+      list: allow
+      glob: allow
+      grep: allow
+      read: allow
+      skill: allow
+      verify: allow
+      mkdir: ask
+      write_file: ask
       edit: ask
       patch: ask
+      apply_diff: ask
       bash: ask
-      "*": allow
+      webfetch: ask
+      websearch: ask
+      "*": deny
     temperature: 0.1
     max_tokens: 16383

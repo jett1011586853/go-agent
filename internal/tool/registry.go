@@ -12,7 +12,13 @@ import (
 )
 
 type Result struct {
-	Output string `json:"output"`
+	Output string        `json:"output"`
+	Writes []WriteRecord `json:"writes,omitempty"`
+}
+
+type WriteRecord struct {
+	Path string `json:"path"`
+	Op   string `json:"op"` // create|modify|append|mkdir|delete
 }
 
 type Tool interface {
@@ -146,15 +152,15 @@ func (b baseTool) safePath(userPath string) (string, error) {
 	if userPath == "" {
 		userPath = "."
 	}
-	if filepath.IsAbs(userPath) {
-		return "", fmt.Errorf("absolute paths are not allowed: %s", userPath)
-	}
-	joined := filepath.Join(b.root, userPath)
-	abs, err := filepath.Abs(joined)
+	rootAbs, err := filepath.Abs(b.root)
 	if err != nil {
 		return "", err
 	}
-	rootAbs, err := filepath.Abs(b.root)
+	candidate := userPath
+	if !filepath.IsAbs(candidate) {
+		candidate = filepath.Join(rootAbs, candidate)
+	}
+	abs, err := filepath.Abs(candidate)
 	if err != nil {
 		return "", err
 	}
@@ -166,6 +172,22 @@ func (b baseTool) safePath(userPath string) (string, error) {
 		return "", fmt.Errorf("path escapes workspace root: %s", userPath)
 	}
 	return abs, nil
+}
+
+func (b baseTool) relPath(absPath string) string {
+	rootAbs, err := filepath.Abs(b.root)
+	if err != nil {
+		return filepath.ToSlash(strings.TrimSpace(absPath))
+	}
+	absPath, err = filepath.Abs(absPath)
+	if err != nil {
+		return filepath.ToSlash(strings.TrimSpace(absPath))
+	}
+	rel, err := filepath.Rel(rootAbs, absPath)
+	if err != nil {
+		return filepath.ToSlash(strings.TrimSpace(absPath))
+	}
+	return filepath.ToSlash(rel)
 }
 
 func parseJSONArgs(raw json.RawMessage, out any) error {

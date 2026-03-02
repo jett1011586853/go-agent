@@ -1,0 +1,3 @@
+#!/usr/bin/env pwsh
+# PowerShell test script for Windows environments
+go test -v ./...

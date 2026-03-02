@@ -82,6 +82,32 @@ Optional reliability knobs in `.env`:
 powershell -ExecutionPolicy Bypass -File .\start-agent.ps1
 ```
 
+Optional: install short commands (one-time):
+
+```powershell
+powershell -ExecutionPolicy Bypass -File .\scripts\install-shortcut.ps1
+```
+
+Then restart PowerShell and use:
+
+```powershell
+goagent
+# or
+gga
+```
+
+If you really want `go go agent`, install with:
+
+```powershell
+powershell -ExecutionPolicy Bypass -File .\scripts\install-shortcut.ps1 -EnableGoShim
+```
+
+To remove shortcuts:
+
+```powershell
+powershell -ExecutionPolicy Bypass -File .\scripts\uninstall-shortcut.ps1
+```
+
 `start.ps1` will auto-start local NIM containers in detached mode when enabled:
 
 - embedding (`embed-nim`, `localhost:8001`)

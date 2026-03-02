@@ -43,10 +43,20 @@ type fileConfig struct {
 	RerankBaseURL     string                 `yaml:"rerank_base_url"`
 	RerankModel       string                 `yaml:"rerank_model"`
 	RerankCandidateK  int                    `yaml:"rerank_candidate_k"`
+	SkillsEnabled     *bool                  `yaml:"skills_enabled"`
+	SkillsDirs        []string               `yaml:"skills_dirs"`
+	SkillsBootstrap   string                 `yaml:"skills_bootstrap"`
+	SkillsAutoLoad    *bool                  `yaml:"skills_auto_load"`
+	SkillsAutoLoadK   int                    `yaml:"skills_auto_load_k"`
+	SkillsCandidateK  int                    `yaml:"skills_candidate_k"`
+	SkillsMaxCtx      int                    `yaml:"skills_max_context_chars"`
 	CompactionTurns   int                    `yaml:"compaction_turns"`
 	CompactionTokens  int                    `yaml:"compaction_token_threshold"`
 	ContextTurnWindow int                    `yaml:"context_turn_window"`
-	ToolOutputLimit   int                    `yaml:"tool_output_limit"`
+	PhaseMaxFiles     int                    `yaml:"phase_max_files"`
+	ToolOutputLimit   int                    `yaml:"tool_output_limit"` // legacy alias
+	ToolOutputModel   int                    `yaml:"tool_output_model_limit"`
+	ToolOutputDisplay int                    `yaml:"tool_output_display_limit"`
 	RequestTimeout    string                 `yaml:"request_timeout"`
 	TurnTimeout       string                 `yaml:"turn_timeout"`
 	OneShotTimeout    string                 `yaml:"oneshot_timeout"`
@@ -81,10 +91,20 @@ type Config struct {
 	RerankBaseURL     string
 	RerankModel       string
 	RerankCandidateK  int
+	SkillsEnabled     bool
+	SkillsDirs        []string
+	SkillsBootstrap   string
+	SkillsAutoLoad    bool
+	SkillsAutoLoadK   int
+	SkillsCandidateK  int
+	SkillsMaxCtx      int
 	CompactionTurns   int
 	CompactionTokens  int
 	ContextTurnWindow int
-	ToolOutputLimit   int
+	PhaseMaxFiles     int
+	ToolOutputLimit   int // legacy alias: mirrors ToolOutputModel
+	ToolOutputModel   int
+	ToolOutputDisplay int
 	RequestTimeout    time.Duration
 	TurnTimeout       time.Duration
 	OneShotTimeout    time.Duration
@@ -119,18 +139,50 @@ func defaultConfig() Config {
 	return Config{
 		Agents: map[string]AgentConfig{
 			"build": {
-				Mode:        "primary",
-				Model:       "z-ai/glm5",
-				Tools:       []string{"list", "glob", "grep", "read", "edit", "patch", "bash", "webfetch", "websearch"},
-				Permissions: map[string]string{"*": "allow"},
+				Model: "z-ai/glm5",
+				Mode:  "primary",
+				Tools: []string{"list", "glob", "grep", "read", "mkdir", "write_file", "edit", "patch", "apply_diff", "verify", "bash", "webfetch", "websearch", "skill"},
+				Permissions: map[string]string{
+					"list":       "allow",
+					"glob":       "allow",
+					"grep":       "allow",
+					"read":       "allow",
+					"skill":      "allow",
+					"verify":     "allow",
+					"mkdir":      "ask",
+					"write_file": "ask",
+					"edit":       "ask",
+					"patch":      "ask",
+					"apply_diff": "ask",
+					"bash":       "ask",
+					"webfetch":   "ask",
+					"websearch":  "ask",
+					"*":          "deny",
+				},
 				Temperature: 0.2,
 				MaxTokens:   1800,
 			},
 			"plan": {
-				Mode:        "primary",
-				Model:       "z-ai/glm5",
-				Tools:       []string{"list", "glob", "grep", "read", "edit", "patch", "bash", "webfetch", "websearch"},
-				Permissions: map[string]string{"edit": "ask", "patch": "ask", "bash": "ask", "*": "allow"},
+				Mode:  "primary",
+				Model: "z-ai/glm5",
+				Tools: []string{"list", "glob", "grep", "read", "mkdir", "write_file", "edit", "patch", "apply_diff", "verify", "bash", "webfetch", "websearch", "skill"},
+				Permissions: map[string]string{
+					"list":       "allow",
+					"glob":       "allow",
+					"grep":       "allow",
+					"read":       "allow",
+					"skill":      "allow",
+					"verify":     "allow",
+					"mkdir":      "ask",
+					"write_file": "ask",
+					"edit":       "ask",
+					"patch":      "ask",
+					"apply_diff": "ask",
+					"bash":       "ask",
+					"webfetch":   "ask",
+					"websearch":  "ask",
+					"*":          "deny",
+				},
 				Temperature: 0.4,
 				MaxTokens:   1400,
 			},
@@ -148,7 +200,7 @@ func defaultConfig() Config {
 		EmbeddingChunk:   260,
 		EmbeddingOverlap: 50,
 		EmbeddingBatch:   12,
-		EmbeddingMaxCtx:  28000,
+		EmbeddingMaxCtx:  12000,
 		EmbeddingIgnore: []string{
 			".git",
 			".run",
@@ -163,10 +215,24 @@ func defaultConfig() Config {
 		RerankBaseURL:     "http://localhost:8002",
 		RerankModel:       "nvidia/llama-3.2-nv-rerankqa-1b-v2",
 		RerankCandidateK:  20,
+		SkillsEnabled:     false,
+		SkillsDirs: []string{
+			filepath.Join(workspace, "data", "superpowers", "skills"),
+			filepath.Join(workspace, "data", "anthropic", "skills"),
+			filepath.Join(workspace, "data", "gsd", "get-shit-done", "workflows"),
+		},
+		SkillsBootstrap:   "using-superpowers",
+		SkillsAutoLoad:    true,
+		SkillsAutoLoadK:   2,
+		SkillsCandidateK:  12,
+		SkillsMaxCtx:      4000,
 		CompactionTurns:   30,
 		CompactionTokens:  12000,
 		ContextTurnWindow: 10,
-		ToolOutputLimit:   50 * 1024,
+		PhaseMaxFiles:     5,
+		ToolOutputLimit:   12 * 1024,
+		ToolOutputModel:   12 * 1024,
+		ToolOutputDisplay: 50 * 1024,
 		RequestTimeout:    180 * time.Second,
 		TurnTimeout:       90 * time.Minute,
 		OneShotTimeout:    60 * time.Minute,
@@ -264,6 +330,27 @@ func applyYAMLConfig(cfg *Config, path string) error {
 	if fc.RerankCandidateK > 0 {
 		cfg.RerankCandidateK = fc.RerankCandidateK
 	}
+	if fc.SkillsEnabled != nil {
+		cfg.SkillsEnabled = *fc.SkillsEnabled
+	}
+	if len(fc.SkillsDirs) > 0 {
+		cfg.SkillsDirs = append([]string(nil), fc.SkillsDirs...)
+	}
+	if v := strings.TrimSpace(fc.SkillsBootstrap); v != "" {
+		cfg.SkillsBootstrap = v
+	}
+	if fc.SkillsAutoLoad != nil {
+		cfg.SkillsAutoLoad = *fc.SkillsAutoLoad
+	}
+	if fc.SkillsAutoLoadK > 0 {
+		cfg.SkillsAutoLoadK = fc.SkillsAutoLoadK
+	}
+	if fc.SkillsCandidateK > 0 {
+		cfg.SkillsCandidateK = fc.SkillsCandidateK
+	}
+	if fc.SkillsMaxCtx > 0 {
+		cfg.SkillsMaxCtx = fc.SkillsMaxCtx
+	}
 	if fc.CompactionTurns > 0 {
 		cfg.CompactionTurns = fc.CompactionTurns
 	}
@@ -273,8 +360,23 @@ func applyYAMLConfig(cfg *Config, path string) error {
 	if fc.ContextTurnWindow > 0 {
 		cfg.ContextTurnWindow = fc.ContextTurnWindow
 	}
+	if fc.PhaseMaxFiles > 0 {
+		cfg.PhaseMaxFiles = fc.PhaseMaxFiles
+	}
+	if fc.ToolOutputModel > 0 {
+		cfg.ToolOutputModel = fc.ToolOutputModel
+	}
+	if fc.ToolOutputDisplay > 0 {
+		cfg.ToolOutputDisplay = fc.ToolOutputDisplay
+	}
 	if fc.ToolOutputLimit > 0 {
 		cfg.ToolOutputLimit = fc.ToolOutputLimit
+		if fc.ToolOutputModel <= 0 {
+			cfg.ToolOutputModel = fc.ToolOutputLimit
+		}
+		if fc.ToolOutputDisplay <= 0 {
+			cfg.ToolOutputDisplay = fc.ToolOutputLimit
+		}
 	}
 	if v := strings.TrimSpace(fc.RequestTimeout); v != "" {
 		d, err := time.ParseDuration(v)
@@ -320,6 +422,7 @@ func applyYAMLConfig(cfg *Config, path string) error {
 }
 
 func applyEnvOverrides(cfg *Config) {
+	defaults := defaultConfig()
 	if v := strings.TrimSpace(os.Getenv("NVIDIA_API_KEY")); v != "" {
 		cfg.NVIDIAAPIKey = v
 	}
@@ -375,14 +478,42 @@ func applyEnvOverrides(cfg *Config) {
 			cfg.ContextTurnWindow = n
 		}
 	}
+	if v := strings.TrimSpace(os.Getenv("PHASE_MAX_FILES")); v != "" {
+		if n, err := strconv.Atoi(v); err == nil && n > 0 {
+			cfg.PhaseMaxFiles = n
+		}
+	}
 	if v := strings.TrimSpace(os.Getenv("COMPACTION_TOKEN_THRESHOLD")); v != "" {
 		if n, err := strconv.Atoi(v); err == nil && n >= 0 {
 			cfg.CompactionTokens = n
 		}
 	}
+	modelExplicit := false
+	displayExplicit := false
+	if v := strings.TrimSpace(os.Getenv("TOOL_OUTPUT_MODEL_LIMIT")); v != "" {
+		if n, err := strconv.Atoi(v); err == nil && n > 0 {
+			cfg.ToolOutputModel = n
+			cfg.ToolOutputLimit = n
+			modelExplicit = true
+		}
+	}
+	if v := strings.TrimSpace(os.Getenv("TOOL_OUTPUT_DISPLAY_LIMIT")); v != "" {
+		if n, err := strconv.Atoi(v); err == nil && n > 0 {
+			cfg.ToolOutputDisplay = n
+			displayExplicit = true
+		}
+	}
 	if v := strings.TrimSpace(os.Getenv("TOOL_OUTPUT_LIMIT")); v != "" {
 		if n, err := strconv.Atoi(v); err == nil && n > 0 {
 			cfg.ToolOutputLimit = n
+			// Preserve explicit split settings (YAML or env). Only apply legacy
+			// mirroring when split values are still defaults and not explicitly set.
+			if !modelExplicit && cfg.ToolOutputModel == defaults.ToolOutputModel {
+				cfg.ToolOutputModel = n
+			}
+			if !displayExplicit && cfg.ToolOutputDisplay == defaults.ToolOutputDisplay {
+				cfg.ToolOutputDisplay = n
+			}
 		}
 	}
 	if v := strings.TrimSpace(os.Getenv("EMBEDDING_TOP_K")); v != "" {
@@ -446,6 +577,44 @@ func applyEnvOverrides(cfg *Config) {
 	if v := strings.TrimSpace(os.Getenv("RERANK_CANDIDATE_K")); v != "" {
 		if n, err := strconv.Atoi(v); err == nil && n > 0 {
 			cfg.RerankCandidateK = n
+		}
+	}
+	if v := strings.TrimSpace(strings.ToLower(os.Getenv("SKILLS_ENABLED"))); v != "" {
+		cfg.SkillsEnabled = v == "1" || v == "true" || v == "yes" || v == "on"
+	}
+	if v := strings.TrimSpace(os.Getenv("SKILLS_DIRS")); v != "" {
+		parts := strings.Split(v, ",")
+		items := make([]string, 0, len(parts))
+		for _, p := range parts {
+			p = strings.TrimSpace(p)
+			if p == "" {
+				continue
+			}
+			items = append(items, p)
+		}
+		if len(items) > 0 {
+			cfg.SkillsDirs = items
+		}
+	}
+	if v := strings.TrimSpace(os.Getenv("SKILLS_BOOTSTRAP")); v != "" {
+		cfg.SkillsBootstrap = v
+	}
+	if v := strings.TrimSpace(strings.ToLower(os.Getenv("SKILLS_AUTO_LOAD"))); v != "" {
+		cfg.SkillsAutoLoad = v == "1" || v == "true" || v == "yes" || v == "on"
+	}
+	if v := strings.TrimSpace(os.Getenv("SKILLS_AUTO_LOAD_K")); v != "" {
+		if n, err := strconv.Atoi(v); err == nil && n > 0 {
+			cfg.SkillsAutoLoadK = n
+		}
+	}
+	if v := strings.TrimSpace(os.Getenv("SKILLS_CANDIDATE_K")); v != "" {
+		if n, err := strconv.Atoi(v); err == nil && n > 0 {
+			cfg.SkillsCandidateK = n
+		}
+	}
+	if v := strings.TrimSpace(os.Getenv("SKILLS_MAX_CONTEXT_CHARS")); v != "" {
+		if n, err := strconv.Atoi(v); err == nil && n > 0 {
+			cfg.SkillsMaxCtx = n
 		}
 	}
 	if v := strings.TrimSpace(os.Getenv("LLM_MAX_RETRIES")); v != "" {
@@ -522,7 +691,7 @@ func normalizeAndValidate(cfg *Config) error {
 		cfg.EmbeddingBatch = 12
 	}
 	if cfg.EmbeddingMaxCtx <= 0 {
-		cfg.EmbeddingMaxCtx = 28000
+		cfg.EmbeddingMaxCtx = 12000
 	}
 	cfg.EmbeddingIgnore = normalizeStringList(cfg.EmbeddingIgnore)
 	if len(cfg.EmbeddingIgnore) == 0 {
@@ -553,6 +722,48 @@ func normalizeAndValidate(cfg *Config) error {
 			return errors.New("rerank_model is required when rerank_enabled=true")
 		}
 	}
+	cfg.SkillsDirs = normalizeStringList(cfg.SkillsDirs)
+	for i, dir := range cfg.SkillsDirs {
+		if !filepath.IsAbs(dir) {
+			cfg.SkillsDirs[i] = filepath.Join(cfg.WorkspaceRoot, dir)
+		}
+	}
+	if cfg.SkillsAutoLoadK <= 0 {
+		cfg.SkillsAutoLoadK = 2
+	}
+	if cfg.SkillsCandidateK <= 0 {
+		cfg.SkillsCandidateK = 12
+	}
+	if cfg.SkillsCandidateK < cfg.SkillsAutoLoadK {
+		cfg.SkillsCandidateK = cfg.SkillsAutoLoadK
+	}
+	if cfg.SkillsMaxCtx <= 0 {
+		cfg.SkillsMaxCtx = 4000
+	}
+	if cfg.PhaseMaxFiles <= 0 {
+		cfg.PhaseMaxFiles = 5
+	}
+	if cfg.PhaseMaxFiles > 20 {
+		cfg.PhaseMaxFiles = 20
+	}
+	if cfg.ToolOutputModel <= 0 {
+		if cfg.ToolOutputLimit > 0 {
+			cfg.ToolOutputModel = cfg.ToolOutputLimit
+		} else {
+			cfg.ToolOutputModel = 12 * 1024
+		}
+	}
+	if cfg.ToolOutputDisplay <= 0 {
+		if cfg.ToolOutputLimit > 0 {
+			cfg.ToolOutputDisplay = cfg.ToolOutputLimit
+		} else {
+			cfg.ToolOutputDisplay = 50 * 1024
+		}
+	}
+	if cfg.ToolOutputDisplay < cfg.ToolOutputModel {
+		cfg.ToolOutputDisplay = cfg.ToolOutputModel
+	}
+	cfg.ToolOutputLimit = cfg.ToolOutputModel
 
 	if strings.TrimSpace(cfg.NVIDIAAPIKey) == "" {
 		return errors.New("NVIDIA_API_KEY is required")
@@ -604,7 +815,7 @@ func normalizeAndValidate(cfg *Config) error {
 			ac.Model = "z-ai/glm5"
 		}
 		if len(ac.Tools) == 0 {
-			ac.Tools = []string{"list", "glob", "grep", "read", "edit", "patch", "bash", "webfetch", "websearch"}
+			ac.Tools = []string{"list", "glob", "grep", "read", "mkdir", "write_file", "edit", "patch", "apply_diff", "verify", "bash", "webfetch", "websearch", "skill"}
 		}
 		if ac.Permissions == nil {
 			ac.Permissions = map[string]string{"*": "ask"}

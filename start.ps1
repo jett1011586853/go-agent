@@ -317,6 +317,16 @@ function Wait-NimReady {
     $attempt = 0
     while ((Get-Date) -lt $deadline) {
         $attempt++
+        if (-not (Test-DockerContainerRunning -Name $Name)) {
+            Write-Host ""
+            Write-Host "$Name is not running during readiness wait." -ForegroundColor Red
+            Write-Host "Last docker logs:" -ForegroundColor Yellow
+            Get-DockerLogsTail -Name $Name -Lines 120 | ForEach-Object { Write-Host $_ }
+            if ($ContinueOnTimeout) {
+                return $false
+            }
+            throw "$Name exited before becoming ready"
+        }
         if (& $Probe) {
             Write-Host "$Name is ready." -ForegroundColor Green
             return $true
@@ -389,6 +399,7 @@ if ($embeddingEnabled) {
         $embedImage = Resolve-StringSetting -EnvName "EMBED_NIM_IMAGE" -ConfigPath $null -ConfigKey $null -Default "nvcr.io/nim/nvidia/llama-3.2-nv-embedqa-1b-v2:1.9.0"
         $embedContainer = Resolve-StringSetting -EnvName "EMBED_NIM_CONTAINER" -ConfigPath $null -ConfigKey $null -Default "embed-nim"
         $embedCache = Resolve-StringSetting -EnvName "EMBED_NIM_CACHE" -ConfigPath $null -ConfigKey $null -Default "D:\nim-cache-embed"
+        $embedReadyTimeout = Resolve-IntSetting -EnvName "EMBED_NIM_READY_TIMEOUT" -ConfigPath $null -ConfigKey $null -Default 300
 
         Start-NimContainer -Name $embedContainer -Image $embedImage -HostPort $embedPort -CacheDir $embedCache -NgcApiKey $ngcApiKey
 
@@ -407,7 +418,7 @@ if ($embeddingEnabled) {
                 return $false
             }
         }
-        $embedReady = Wait-NimReady -Name $embedContainer -Probe $embedProbe -ContinueOnTimeout
+        $embedReady = Wait-NimReady -Name $embedContainer -Probe $embedProbe -TimeoutSeconds $embedReadyTimeout -ContinueOnTimeout
         if (-not $embedReady) {
             [Environment]::SetEnvironmentVariable("EMBEDDING_ENABLED", "false", "Process")
             [Environment]::SetEnvironmentVariable("RERANK_ENABLED", "false", "Process")
@@ -428,6 +439,7 @@ if ($rerankEnabled) {
         $rerankImage = Resolve-StringSetting -EnvName "RERANK_NIM_IMAGE" -ConfigPath $null -ConfigKey $null -Default "nvcr.io/nim/nvidia/llama-3.2-nv-rerankqa-1b-v2:1.7.0"
         $rerankContainer = Resolve-StringSetting -EnvName "RERANK_NIM_CONTAINER" -ConfigPath $null -ConfigKey $null -Default "rerank-nim"
         $rerankCache = Resolve-StringSetting -EnvName "RERANK_NIM_CACHE" -ConfigPath $null -ConfigKey $null -Default "D:\nim-cache-rerank"
+        $rerankReadyTimeout = Resolve-IntSetting -EnvName "RERANK_NIM_READY_TIMEOUT" -ConfigPath $null -ConfigKey $null -Default 900
         $rerankProfile = Resolve-StringSetting -EnvName "RERANK_NIM_PROFILE" -ConfigPath $null -ConfigKey $null -Default ""
         $rerankTokenizerInstances = Resolve-StringSetting -EnvName "RERANK_NIM_TOKENIZER_INSTANCES" -ConfigPath $null -ConfigKey $null -Default "1"
         $rerankModelInstances = Resolve-StringSetting -EnvName "RERANK_NIM_MODEL_INSTANCES" -ConfigPath $null -ConfigKey $null -Default "1"
@@ -466,10 +478,9 @@ if ($rerankEnabled) {
         }
         $rerankFatalPatterns = @(
             "boost::interprocess::lock_exception",
-            "Non-graceful termination detected",
-            "Triton service unavailable"
+            "Non-graceful termination detected"
         )
-        $rerankReady = Wait-NimReady -Name $rerankContainer -Probe $rerankProbe -FatalPatterns $rerankFatalPatterns -ContinueOnTimeout
+        $rerankReady = Wait-NimReady -Name $rerankContainer -Probe $rerankProbe -TimeoutSeconds $rerankReadyTimeout -FatalPatterns $rerankFatalPatterns -ContinueOnTimeout
         if (-not $rerankReady) {
             Write-Host "Rerank NIM unhealthy, recreating once..." -ForegroundColor Yellow
             & docker rm -f $rerankContainer | Out-Null
@@ -477,7 +488,7 @@ if ($rerankEnabled) {
                 throw "docker rm -f failed for container: $rerankContainer"
             }
             Start-NimContainer -Name $rerankContainer -Image $rerankImage -HostPort $rerankPort -CacheDir $rerankCache -NgcApiKey $ngcApiKey -ExtraEnv $rerankExtraEnv
-            $rerankReady = Wait-NimReady -Name $rerankContainer -Probe $rerankProbe -FatalPatterns $rerankFatalPatterns
+            $rerankReady = Wait-NimReady -Name $rerankContainer -Probe $rerankProbe -TimeoutSeconds $rerankReadyTimeout -FatalPatterns $rerankFatalPatterns
             if (-not $rerankReady) {
                 throw "Rerank NIM failed readiness after recreate. Run: docker logs --tail 200 $rerankContainer"
             }

@@ -61,6 +61,15 @@ func (failingReranker) Rerank(_ context.Context, _ string, _ []string, _ int) ([
 	return nil, context.DeadlineExceeded
 }
 
+type countingFailingReranker struct {
+	calls int
+}
+
+func (r *countingFailingReranker) Rerank(_ context.Context, _ string, _ []string, _ int) ([]int, error) {
+	r.calls++
+	return nil, context.DeadlineExceeded
+}
+
 func TestTopKWithDiversity(t *testing.T) {
 	chunks := []Chunk{
 		{Path: "a.go", StartLine: 1, EndLine: 20, Text: "a1", Vec: []float64{0.90, 0.40}},
@@ -69,7 +78,7 @@ func TestTopKWithDiversity(t *testing.T) {
 		{Path: "b.go", StartLine: 1, EndLine: 20, Text: "b1", Vec: []float64{0.95, 0.10}},
 		{Path: "c.go", StartLine: 1, EndLine: 20, Text: "c1", Vec: []float64{0.60, 0.80}},
 	}
-	got := topKWithDiversity([]float64{1, 0}, chunks, 4, 2)
+	got := topKWithDiversity([]float64{1, 0}, chunks, 4, 2, "")
 	if len(got) != 4 {
 		t.Fatalf("expected 4 results, got %d", len(got))
 	}
@@ -84,6 +93,33 @@ func TestTopKWithDiversity(t *testing.T) {
 	}
 	if got[0].Chunk.Path != "b.go" {
 		t.Fatalf("expected top result from b.go, got %s", got[0].Chunk.Path)
+	}
+}
+
+func TestTopKWithDiversityAppliesActiveRootBoost(t *testing.T) {
+	chunks := []Chunk{
+		{Path: "internal/app/app.go", StartLine: 1, EndLine: 20, Text: "app", Vec: []float64{0.80, 0.20}},
+		{Path: "projects/trade-lab/cmd/main.go", StartLine: 1, EndLine: 20, Text: "main", Vec: []float64{0.79, 0.20}},
+	}
+	got := topKWithDiversity([]float64{1, 0}, chunks, 2, 2, "projects/trade-lab")
+	if len(got) != 2 {
+		t.Fatalf("expected 2 results, got %d", len(got))
+	}
+	if got[0].Chunk.Path != "projects/trade-lab/cmd/main.go" {
+		t.Fatalf("expected active-root path to win after boost, got %s", got[0].Chunk.Path)
+	}
+}
+
+func TestParseActiveRootHint(t *testing.T) {
+	root, q := parseActiveRootHint("active_root: projects/trade-lab\nbuild event-driven backtest platform")
+	if root != "projects/trade-lab" {
+		t.Fatalf("unexpected root: %q", root)
+	}
+	if strings.Contains(strings.ToLower(q), "active_root:") {
+		t.Fatalf("active_root marker should be removed from query: %q", q)
+	}
+	if strings.TrimSpace(q) == "" {
+		t.Fatalf("expected non-empty query text")
 	}
 }
 
@@ -153,6 +189,32 @@ func TestServiceRetrieveFallsBackWhenRerankFails(t *testing.T) {
 	}
 	if !strings.Contains(out, "[CONTEXT 1] pkg/a.go:1-10") {
 		t.Fatalf("expected fallback to embedding order, got: %s", out)
+	}
+}
+
+func TestServiceRerankCircuitBreakerSkipsAfterRepeatedFailures(t *testing.T) {
+	r := &countingFailingReranker{}
+	svc := NewService(queryOnlyEmbedder{query: []float64{1, 0}}, DefaultOptions(t.TempDir()))
+	svc.SetReranker(r)
+	svc.chunks = []Chunk{
+		{Path: "pkg/a.go", StartLine: 1, EndLine: 10, Text: "A", Vec: []float64{0.95, 0.1}},
+		{Path: "pkg/b.go", StartLine: 1, EndLine: 10, Text: "B", Vec: []float64{0.90, 0.1}},
+	}
+	for i := 0; i < 4; i++ {
+		if _, err := svc.Retrieve(context.Background(), "where"); err != nil {
+			t.Fatalf("retrieve failed on round %d: %v", i+1, err)
+		}
+	}
+	// threshold is 3; the 4th call should be skipped by circuit breaker.
+	if r.calls != 3 {
+		t.Fatalf("expected rerank calls=3 after circuit opens, got %d", r.calls)
+	}
+	notices := svc.ConsumeNotices()
+	if len(notices) == 0 {
+		t.Fatalf("expected rerank circuit notice after repeated failures")
+	}
+	if len(svc.ConsumeNotices()) != 0 {
+		t.Fatalf("expected notices to be consumed once")
 	}
 }
 

@@ -25,6 +25,22 @@ func TestReadToolPathSafety(t *testing.T) {
 	if err == nil {
 		t.Fatalf("expected path traversal to fail")
 	}
+	outsideAbs := filepath.Join(filepath.Dir(root), "outside.txt")
+	outsideJSON, _ := json.Marshal(map[string]any{"path": outsideAbs})
+	_, err = reg.Run(context.Background(), "read", outsideJSON)
+	if err == nil {
+		t.Fatalf("expected out-of-workspace absolute path to fail")
+	}
+
+	abs := filepath.Join(root, "a.txt")
+	absJSON, _ := json.Marshal(map[string]any{"path": abs})
+	resAbs, err := reg.Run(context.Background(), "read", absJSON)
+	if err != nil {
+		t.Fatalf("expected read with in-workspace absolute path success, got %v", err)
+	}
+	if !strings.Contains(resAbs.Output, "hello") {
+		t.Fatalf("expected absolute-path read output, got: %q", resAbs.Output)
+	}
 
 	res, err := reg.Run(context.Background(), "read", json.RawMessage(`{"path":"a.txt"}`))
 	if err != nil {
@@ -66,6 +82,33 @@ func TestEditAndPatchTools(t *testing.T) {
 	}
 	if string(raw) != "line1\nlineB" {
 		t.Fatalf("unexpected patched content: %q", string(raw))
+	}
+}
+
+func TestMkdirAndWriteFileTools(t *testing.T) {
+	root := t.TempDir()
+	reg := NewRegistry()
+	if err := RegisterBuiltins(reg, root, 4096); err != nil {
+		t.Fatal(err)
+	}
+
+	_, err := reg.Run(context.Background(), "mkdir", json.RawMessage(`{"path":"nested/dir"}`))
+	if err != nil {
+		t.Fatalf("mkdir failed: %v", err)
+	}
+	res, err := reg.Run(context.Background(), "write_file", json.RawMessage(`{"path":"nested/dir/file.txt","content":"hello","mode":"create"}`))
+	if err != nil {
+		t.Fatalf("write_file failed: %v", err)
+	}
+	if len(res.Writes) == 0 {
+		t.Fatalf("expected write metadata")
+	}
+	raw, err := os.ReadFile(filepath.Join(root, "nested", "dir", "file.txt"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(raw) != "hello" {
+		t.Fatalf("unexpected file content: %q", string(raw))
 	}
 }
 

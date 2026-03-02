@@ -89,8 +89,11 @@ func (p *NVIDIAProvider) Chat(ctx context.Context, req ChatRequest) (ChatRespons
 	for attempt := 0; ; attempt++ {
 		reqCtx := ctx
 		var cancel context.CancelFunc
-		if !stream && p.requestTimeout > 0 {
-			reqCtx, cancel = context.WithTimeout(ctx, p.requestTimeout)
+		if !stream {
+			timeout := p.requestTimeoutForAttempt(attempt)
+			if timeout > 0 {
+				reqCtx, cancel = context.WithTimeout(ctx, timeout)
+			}
 		}
 		httpReq, err := http.NewRequestWithContext(reqCtx, http.MethodPost, url, bytes.NewReader(rawBody))
 		if err != nil {
@@ -353,8 +356,15 @@ func (p *NVIDIAProvider) shouldRetry(attempt int, statusCode int, reqErr error) 
 		return false
 	}
 	if reqErr != nil {
-		if errors.Is(reqErr, context.DeadlineExceeded) || errors.Is(reqErr, context.Canceled) {
+		if errors.Is(reqErr, context.Canceled) {
 			return false
+		}
+		if errors.Is(reqErr, context.DeadlineExceeded) {
+			return true
+		}
+		lower := strings.ToLower(reqErr.Error())
+		if strings.Contains(lower, "context deadline exceeded") || strings.Contains(lower, "i/o timeout") {
+			return true
 		}
 		var ne net.Error
 		if errors.As(reqErr, &ne) {
@@ -368,6 +378,22 @@ func (p *NVIDIAProvider) shouldRetry(attempt int, statusCode int, reqErr error) 
 	default:
 		return statusCode >= 500
 	}
+}
+
+func (p *NVIDIAProvider) requestTimeoutForAttempt(attempt int) time.Duration {
+	if p.requestTimeout <= 0 {
+		return 0
+	}
+	if attempt <= 0 {
+		return p.requestTimeout
+	}
+	extra := p.requestTimeout / 2
+	timeout := p.requestTimeout + (time.Duration(attempt) * extra)
+	maxTimeout := 8 * time.Minute
+	if timeout > maxTimeout {
+		return maxTimeout
+	}
+	return timeout
 }
 
 func waitBackoff(ctx context.Context, attempt int, statusCode int, retryAfter string) error {

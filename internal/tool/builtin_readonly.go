@@ -19,9 +19,13 @@ func RegisterBuiltins(reg *Registry, workspaceRoot string, outputLimit int) erro
 		&globTool{baseTool: base},
 		&grepTool{baseTool: base},
 		&readTool{baseTool: base},
+		&mkdirTool{baseTool: base},
+		&writeFileTool{baseTool: base},
 		&editTool{baseTool: base},
 		&patchTool{baseTool: base},
+		&applyDiffTool{baseTool: base},
 		&bashTool{baseTool: base},
+		&verifyTool{baseTool: base},
 		newWebfetchTool(base),
 		newWebsearchTool(base),
 	}

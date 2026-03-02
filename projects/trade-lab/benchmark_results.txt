@@ -1,0 +1,3 @@
+Throughput: 3052540 events/sec
+Avg Latency: 0s
+Timestamp: 2026-03-02T18:02:53+08:00
